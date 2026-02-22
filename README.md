@@ -2,7 +2,14 @@
 
 `cortexd` is an AI-native Linux infrastructure intelligence layer. It securely maps real-time `/proc`, `systemctl`, and `journalctl` telemetry securely into the Model Context Protocol (MCP) using a single, unified Rust daemon.
 
-This repository is the core server (`stdio` transport) allowing AI models like Claude to instantly observe their host operating environment.
+This repository is the core server (`stdio` transport) allowing AI models like Claude to instantly observe their host operating environment, powered by the robust `rmcp` crate.
+
+## Features
+
+- **Comprehensive Providers**: Observes `system`, `process`, `service`, `log`, `network`, `container`, `file`, and `package` domains.
+- **Policy-Based Access Control**: Granular endpoint authorization configured via `policy.toml`.
+- **Audit Logging**: Comprehensive action tracing written to `audit.log` for secure operations.
+- **Native MCP Support**: Speaks the Model Context Protocol directly over `stdin/stdout`.
 
 ## Getting Started (for Contributors)
 
@@ -18,7 +25,7 @@ This repository is the core server (`stdio` transport) allowing AI models like C
 git clone https://github.com/cortexd-labs/cortexd.git
 cd cortexd
 
-# Run the 20 test suite mappings against the raw Linux kernel endpoints
+# Run the test suite mappings against the raw Linux kernel endpoints
 cargo test
 
 # Ensure strict styling and typing compliance
@@ -42,7 +49,7 @@ From the root `cortexd` directory, run:
 npx -y @modelcontextprotocol/inspector cargo run
 ```
 
-This will open a local webport (e.g. `http://localhost:5173`) where you can manually trigger `tools/call` for `process.top`, `system.info`, etc., and see the exact JSON-RPC payloads mapping from the daemon.
+This will open a local webport (e.g. `http://localhost:5173`) where you can manually trigger tools for `process.top`, `system.info`, etc., and see the exact JSON-RPC payloads mapping from the daemon.
 
 ### Claude Desktop
 
@@ -65,12 +72,11 @@ To hook the daemon directly into Claude Desktop on your Linux host:
 
 ## Architecture
 
-The project intentionally uses a single-crate MVP structure for maximum DevX loop velocity:
+The project intentionally uses a single-crate structure, organized as follows:
 
-- `src/core/`: The `Provider` traits and central `ProviderRegistry`.
-- `src/transport/`: The `mcp.rs` stdio JSON-RPC loop handlers.
-- `src/providers/`: The individual spec mappings (`system`, `process`, `service`, `log`).
-- `src/linux/`: The raw subsystem polling functions mapping `systemctl` and `/proc`.
+- `src/engine/`: The core MCP server implementation, policy enforcement (`policy.rs`), and audit logging (`audit.rs`).
+- `src/linux/`: The raw subsystem polling functions mapping abstractions to underlying OS primitives (e.g. `systemctl`, `/proc`).
+- `src/providers/`: The individual MCP tool resource mappings (`system`, `process`, `service`, `log`, `network`, `container`, `file`, `package`).
 
 ## Contributing
 
