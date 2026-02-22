@@ -22,7 +22,7 @@ pub struct AuditLogger {
 
 impl Default for AuditLogger {
     fn default() -> Self {
-        Self::new("/var/log/cortexd/audit.log")
+        Self::new("/var/log/neurond/audit.log")
     }
 }
 

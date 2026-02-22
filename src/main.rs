@@ -4,14 +4,14 @@ pub mod providers;
 
 use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
-use crate::engine::server::CortexdEngine;
+use crate::engine::server::NeurondEngine;
 use crate::engine::policy::Policy;
 use crate::engine::audit::AuditLogger;
 
 /// Default paths for configuration and logging.
 /// In production, these should be overridden by CLI args or environment variables.
-const DEFAULT_POLICY_PATH: &str = "/etc/cortexd/policy.toml";
-const DEFAULT_AUDIT_LOG: &str = "/var/log/cortexd/audit.log";
+const DEFAULT_POLICY_PATH: &str = "/etc/neurond/policy.toml";
+const DEFAULT_AUDIT_LOG: &str = "/var/log/neurond/audit.log";
 
 /// Fallback paths for development (relative to CWD).
 const DEV_POLICY_PATH: &str = "policy.toml";
@@ -19,16 +19,16 @@ const DEV_AUDIT_LOG: &str = "audit.log";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Respect RUST_LOG if set, otherwise default to cortexd=info
+    // Respect RUST_LOG if set, otherwise default to neurond=info
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("cortexd=info"));
+        .unwrap_or_else(|_| EnvFilter::new("neurond=info"));
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .init();
 
-    tracing::info!("Starting Cortexd Linux Controller MCP server");
+    tracing::info!("Starting Neurond Linux Controller MCP server");
 
     // Try production path first, fall back to dev path
     let policy_path = if std::path::Path::new(DEFAULT_POLICY_PATH).exists() {
@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
 
     let dbus_conn = zbus::Connection::system().await?;
 
-    let engine = CortexdEngine::new(dbus_conn, policy, audit_logger);
+    let engine = NeurondEngine::new(dbus_conn, policy, audit_logger);
 
     let service = engine.serve(rmcp::transport::stdio()).await?;
 
@@ -68,6 +68,6 @@ async fn main() -> anyhow::Result<()> {
     //   }
     service.waiting().await?;
 
-    tracing::info!("Cortexd shutting down cleanly");
+    tracing::info!("Neurond shutting down cleanly");
     Ok(())
 }

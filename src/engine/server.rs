@@ -9,14 +9,14 @@ use crate::engine::policy::Policy;
 use crate::engine::audit::AuditLogger;
 
 #[derive(Clone)]
-pub struct CortexdEngine {
+pub struct NeurondEngine {
     tool_router: ToolRouter<Self>,
     pub dbus_conn: Connection,
     pub policy: Policy,
     pub audit: AuditLogger,
 }
 
-impl CortexdEngine {
+impl NeurondEngine {
     async fn start_tool_call(&self, tool: &str, params: &serde_json::Value) -> Result<std::time::Instant, McpError> {
         let start = std::time::Instant::now();
         if !self.policy.is_allowed(tool) {
@@ -108,7 +108,7 @@ pub struct ContainerStatsArgs {
 // ── Tool implementations ──────────────────────────────────────────────
 
 #[tool_router]
-impl CortexdEngine {
+impl NeurondEngine {
     pub fn new(dbus_conn: Connection, policy: Policy, audit: AuditLogger) -> Self {
         Self {
             tool_router: Self::tool_router(),
@@ -543,7 +543,7 @@ impl CortexdEngine {
 }
 
 #[tool_handler]
-impl ServerHandler for CortexdEngine {
+impl ServerHandler for NeurondEngine {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::V_2024_11_05,
@@ -552,7 +552,7 @@ impl ServerHandler for CortexdEngine {
                 .build(),
             server_info: Implementation::from_build_env(),
             instructions: Some(
-                "Cortexd is a Linux system controller. It provides tools to observe \
+                "Neurond is a Linux system controller. It provides tools to observe \
                  and manage system resources, services, processes, logs, network, \
                  files, containers, and packages.".into()
             ),

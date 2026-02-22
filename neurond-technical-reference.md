@@ -1,8 +1,8 @@
-# cortexd — Complete Technical Reference
+# neurond — Complete Technical Reference
 
 **Rust crate recommendations, API patterns, and implementation strategies for all 9 providers + core infrastructure.**
 
-This document is the companion to the zbus/systemd D-Bus report. Together they form the complete foundation for building cortexd.
+This document is the companion to the zbus/systemd D-Bus report. Together they form the complete foundation for building neurond.
 
 ---
 
@@ -49,13 +49,13 @@ use rmcp::{
 use schemars;
 
 #[derive(Clone)]
-pub struct cortexd {
+pub struct neurond {
     tool_router: ToolRouter<Self>,
     // ... your state (D-Bus connection, procfs handle, etc.)
 }
 
 #[tool_router]
-impl cortexd {
+impl neurond {
     pub fn new(/* dependencies */) -> Self {
         Self {
             tool_router: Self::tool_router(),
@@ -102,16 +102,16 @@ impl cortexd {
 }
 
 #[tool_handler]
-impl ServerHandler for cortexd {
+impl ServerHandler for neurond {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::V_2024_11_05,
             capabilities: ServerCapabilities::builder()
                 .enable_tools()
                 .build(),
-            server_info: Implementation::new("cortexd", env!("CARGO_PKG_VERSION")),
+            server_info: Implementation::new("neurond", env!("CARGO_PKG_VERSION")),
             instructions: Some(
-                "cortexd is a Linux system controller. It provides tools to observe \
+                "neurond is a Linux system controller. It provides tools to observe \
                  and manage system resources, services, processes, logs, network, \
                  files, containers, and packages.".into()
             ),
@@ -121,7 +121,7 @@ impl ServerHandler for cortexd {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let service = cortexd::new().serve(stdio()).await?;
+    let service = neurond::new().serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
 }
@@ -168,20 +168,20 @@ This is a net deletion of code. Your `providers/system.rs` match arms become `#[
 async fn main() -> anyhow::Result<()> {
     // 1. Initialize logging (to stderr — critical for stdio MCP)
     tracing_subscriber::fmt()
-        .with_env_filter("cortexd=info")
+        .with_env_filter("neurond=info")
         .with_writer(std::io::stderr)  // NEVER write to stdout with stdio transport
         .init();
 
-    // 2. Shared state: create once, pass to cortexd
+    // 2. Shared state: create once, pass to neurond
     let dbus_conn = zbus::Connection::system().await?;
 
     // 3. Build and serve
-    let cortexd = cortexd::new(dbus_conn);
-    let service = cortexd.serve(rmcp::transport::stdio()).await?;
+    let neurond = neurond::new(dbus_conn);
+    let service = neurond.serve(rmcp::transport::stdio()).await?;
 
     // 4. Wait for shutdown (client disconnect or signal)
     service.waiting().await?;
-    tracing::info!("cortexd shutting down cleanly");
+    tracing::info!("neurond shutting down cleanly");
     Ok(())
 }
 ```
@@ -236,7 +236,7 @@ token.cancel();
 For TOML config parsing, use `toml` + `serde`:
 
 ```toml
-# /etc/cortexd/policy.toml
+# /etc/neurond/policy.toml
 [trust]
 level = "observer"  # observer | operator | admin
 
@@ -265,7 +265,7 @@ struct Config {
     limits: LimitsConfig,
 }
 
-let config: Config = toml::from_str(&std::fs::read_to_string("/etc/cortexd/policy.toml")?)?;
+let config: Config = toml::from_str(&std::fs::read_to_string("/etc/neurond/policy.toml")?)?;
 ```
 
 For live config reload, use the `notify` crate (covered in File Provider section) to watch the config file and re-parse on change.
@@ -511,7 +511,7 @@ fn uid_to_username(uid: u32) -> String {
 
 **Covered in prior report.** Key addition for async integration:
 
-The `systemd` crate's journal reader is sync and `!Send`. For use in async cortexd tools, wrap in `spawn_blocking`:
+The `systemd` crate's journal reader is sync and `!Send`. For use in async neurond tools, wrap in `spawn_blocking`:
 
 ```rust
 async fn journal_tail(unit: &str, lines: usize) -> Result<Vec<String>, anyhow::Error> {
@@ -753,7 +753,7 @@ async fn watch_path(path: &str) -> anyhow::Result<mpsc::Receiver<Event>> {
 
     // Watcher must be kept alive — store it in your state struct
     // If dropped, watching stops
-    std::mem::forget(watcher); // HACK — properly store in cortexd struct
+    std::mem::forget(watcher); // HACK — properly store in neurond struct
 
     Ok(rx)
 }
@@ -1026,7 +1026,7 @@ wasmtime = "24"
 
 **Rationale:** rmcp handles protocol negotiation, tool schema generation, transport management, and capability advertisement. Your hand-rolled code duplicates this with less correctness. The `#[tool]` macro eliminates the Provider trait → Registry → JSON-RPC chain entirely.
 
-**Migration:** Delete `transport/mcp.rs`, `core/provider.rs`, `core/registry.rs`. Move tool logic from `providers/*.rs` into `#[tool]` methods on a single `cortexd` struct (or split into multiple structs with `#[tool_router]`).
+**Migration:** Delete `transport/mcp.rs`, `core/provider.rs`, `core/registry.rs`. Move tool logic from `providers/*.rs` into `#[tool]` methods on a single `neurond` struct (or split into multiple structs with `#[tool_router]`).
 
 ### Decision: Keep linux/ modules as pure data layer
 
@@ -1044,21 +1044,21 @@ Your `linux/procfs.rs` and `linux/systemd.rs` modules stay. They're the real val
 
 **Rationale:** The "no shelling out" principle applies to kernel subsystems that have proper programmatic APIs (D-Bus, netlink, procfs, sysfs). Package managers don't expose such APIs. Parsing `/var/lib/dpkg/status` is the pragmatic approach, with optional `rpm -q` fallback for RHEL systems.
 
-### Decision: Single cortexd struct vs. multiple routers
+### Decision: Single neurond struct vs. multiple routers
 
 rmcp supports `#[tool_router]` on multiple impl blocks. You could split tools across files:
 
 ```rust
 // system_tools.rs
 #[tool_router]
-impl cortexd {
+impl neurond {
     #[tool(description = "...")] async fn system_info(&self) -> ...
     #[tool(description = "...")] async fn system_cpu(&self) -> ...
 }
 
 // service_tools.rs
 #[tool_router]
-impl cortexd {
+impl neurond {
     #[tool(description = "...")] async fn service_list(&self) -> ...
     #[tool(description = "...")] async fn service_status(&self) -> ...
 }
@@ -1068,4 +1068,4 @@ This preserves your provider-based organization as a code layout concern while u
 
 ---
 
-_End of reference. This document + the prior zbus/systemd report cover the complete cortexd tech stack._
+_End of reference. This document + the prior zbus/systemd report cover the complete neurond tech stack._

@@ -1,6 +1,6 @@
-# cortexd
+# neurond
 
-`cortexd` is an AI-native Linux infrastructure intelligence layer. It securely maps real-time `/proc`, `systemctl`, and `journalctl` telemetry securely into the Model Context Protocol (MCP) using a single, unified Rust daemon.
+`neurond` is an AI-native Linux infrastructure intelligence layer. It securely maps real-time `/proc`, `systemctl`, and `journalctl` telemetry securely into the Model Context Protocol (MCP) using a single, unified Rust daemon.
 
 This repository is the core server (`stdio` transport) allowing AI models like Claude to instantly observe their host operating environment, powered by the robust `rmcp` crate.
 
@@ -22,8 +22,8 @@ This repository is the core server (`stdio` transport) allowing AI models like C
 
 ```bash
 # Clone the repository
-git clone https://github.com/cortexd-labs/cortexd.git
-cd cortexd
+git clone https://github.com/neurond-labs/neurond.git
+cd neurond
 
 # Run the test suite mappings against the raw Linux kernel endpoints
 cargo test
@@ -37,13 +37,13 @@ cargo build --release
 
 ## Testing with an AI Client
 
-Because `cortexd` speaks the Model Context Protocol natively over `stdin/stdout`, you can instantly test it with any MCP-compliant interface.
+Because `neurond` speaks the Model Context Protocol natively over `stdin/stdout`, you can instantly test it with any MCP-compliant interface.
 
 ### The MCP Inspector (Recommended for Dev)
 
 If you have Node.js / `npm` installed, the easiest way to debug your Rust changes interactively is the official web-inspector.
 
-From the root `cortexd` directory, run:
+From the root `neurond` directory, run:
 
 ```bash
 npx -y @modelcontextprotocol/inspector cargo run
@@ -61,8 +61,8 @@ To hook the daemon directly into Claude Desktop on your Linux host:
 ```json
 {
   "mcpServers": {
-    "cortexd": {
-      "command": "/absolute/path/to/cortexd/target/release/cortexd"
+    "neurond": {
+      "command": "/absolute/path/to/neurond/target/release/neurond"
     }
   }
 }
