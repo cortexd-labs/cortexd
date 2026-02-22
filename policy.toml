@@ -1,0 +1,52 @@
+default_action = "deny"
+
+[[rules]]
+id = "allow-observability"
+description = "Allow the AI to gather non-mutating system context"
+effect = "allow"
+tools = [
+    "system.*",
+    "process.*",
+    "log.*"
+]
+
+[[rules]]
+id = "allow-safe-service-reads"
+effect = "allow"
+tools = [
+    "service.list",
+    "service.status",
+    "service.logs"
+]
+
+[[rules]]
+id = "allow-network-reads"
+description = "Allow network interface and connection inspection"
+effect = "allow"
+tools = [
+    "network.*"
+]
+
+[[rules]]
+id = "allow-file-reads"
+description = "Allow file metadata and directory listing"
+effect = "allow"
+tools = [
+    "file.*"
+]
+
+[[rules]]
+id = "allow-container-reads"
+description = "Allow Docker container listing and stats"
+effect = "allow"
+tools = [
+    "container.*"
+]
+
+[[rules]]
+id = "allow-package-reads"
+description = "Allow listing installed packages"
+effect = "allow"
+tools = [
+    "package.*"
+]

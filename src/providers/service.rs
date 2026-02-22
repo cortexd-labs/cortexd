@@ -1,103 +1,45 @@
-use crate::engine::provider::{Provider, ProviderError, Result, Tool, ToolType};
 use serde_json::Value;
+use zbus::Connection;
 
-pub struct ServiceProvider;
-
-impl Provider for ServiceProvider {
-    fn namespace(&self) -> &str {
-        "service"
-    }
-
-    fn tools(&self) -> Vec<Tool> {
-        vec![
-            Tool {
-                name: "service.list".into(),
-                description: "All systemd units with state, sub-state, description".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {}
-                }),
-                tool_type: ToolType::Observable,
-            },
-            Tool {
-                name: "service.status".into(),
-                description: "Unit detail: state, PID, memory, CPU, started_at".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "The unit name, e.g. nginx.service"
-                        }
-                    },
-                    "required": ["name"]
-                }),
-                tool_type: ToolType::Observable,
-            },
-            Tool {
-                name: "service.logs".into(),
-                description: "Recent journal entries for a unit (configurable lines)".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "The unit name, e.g. nginx.service"
-                        },
-                        "lines": {
-                            "type": "integer",
-                            "description": "Number of lines to return (default 50)"
-                        }
-                    },
-                    "required": ["name"]
-                }),
-                tool_type: ToolType::Observable,
-            },
-        ]
-    }
-
-    fn call(&self, tool: &str, params: Value) -> Result<Value> {
-        match tool {
-            "service.list" => crate::linux::systemd::list_units(),
-            "service.status" => {
-                let name = params.get("name").and_then(|n| n.as_str())
-                    .ok_or_else(|| ProviderError::Execution("Missing required parameter: name".into()))?;
-                crate::linux::systemd::get_unit_status(name)
-            }
-            "service.logs" => {
-                let name = params.get("name").and_then(|n| n.as_str())
-                    .ok_or_else(|| ProviderError::Execution("Missing required parameter: name".into()))?;
-                let lines = params.get("lines").and_then(|n| n.as_u64()).unwrap_or(50) as usize;
-                
-                crate::linux::systemd::journal_tail(Some(name), lines)
-            }
-            _ => Err(ProviderError::NotFound(tool.into())),
-        }
-    }
+pub async fn service_list(connection: &Connection) -> anyhow::Result<Value> {
+    crate::linux::systemd::list_units(connection).await
 }
 
-// ========================================================================= //
-// TDD Tests                                                                 //
-// ========================================================================= //
+pub async fn service_status(name: &str, connection: &Connection) -> anyhow::Result<Value> {
+    crate::linux::systemd::get_unit_status(name, connection).await
+}
+
+pub async fn service_logs(name: &str, lines: usize) -> anyhow::Result<Value> {
+    crate::linux::systemd::journal_tail(Some(name), lines).await
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_service_provider_namespace() {
-        let provider = ServiceProvider;
-        assert_eq!(provider.namespace(), "service");
+    #[tokio::test]
+    async fn test_service_list() {
+        let conn = Connection::system().await.expect("D-Bus connection");
+        let result = service_list(&conn).await.unwrap();
+        let arr = result.as_array().expect("Service list should be an array");
+        assert!(!arr.is_empty(), "Should return some systemd services");
     }
 
-    #[test]
-    fn test_service_provider_tools() {
-        let provider = ServiceProvider;
-        let tools = provider.tools();
-        assert_eq!(tools.len(), 3);
-        let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"service.list"));
-        assert!(names.contains(&"service.status"));
-        assert!(names.contains(&"service.logs"));
+    #[tokio::test]
+    async fn test_service_status() {
+        let conn = Connection::system().await.expect("D-Bus connection");
+        let result = service_status("systemd-journald.service", &conn).await;
+        if let Ok(val) = result {
+            assert_eq!(val["Id"], "systemd-journald.service");
+            assert!(val.get("ActiveState").is_some(), "Status should contain ActiveState");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_service_logs() {
+        let result = service_logs("systemd-journald.service", 5).await;
+        if let Ok(val) = result {
+            assert!(val.is_array() || val.is_object(), "Logs should return structured data");
+        }
     }
 }

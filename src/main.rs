@@ -1,35 +1,73 @@
 pub mod engine;
 pub mod linux;
 pub mod providers;
-pub mod transport;
 
-use crate::engine::registry::ProviderRegistry;
-use crate::transport::mcp::McpTransport;
-use crate::providers::{
-    system::SystemProvider,
-    service::ServiceProvider,
-    process::ProcessProvider,
-    log::LogProvider,
-};
+use rmcp::ServiceExt;
+use tracing_subscriber::EnvFilter;
+use crate::engine::server::CortexdEngine;
+use crate::engine::policy::Policy;
+use crate::engine::audit::AuditLogger;
 
-fn main() {
-    // 1. Initialize the Provider Registry
-    let mut registry = ProviderRegistry::new();
+/// Default paths for configuration and logging.
+/// In production, these should be overridden by CLI args or environment variables.
+const DEFAULT_POLICY_PATH: &str = "/etc/cortexd/policy.toml";
+const DEFAULT_AUDIT_LOG: &str = "/var/log/cortexd/audit.log";
 
-    // 2. Register all MVP Providers
-    registry.register(Box::new(SystemProvider));
-    registry.register(Box::new(ServiceProvider));
-    registry.register(Box::new(ProcessProvider));
-    registry.register(Box::new(LogProvider));
+/// Fallback paths for development (relative to CWD).
+const DEV_POLICY_PATH: &str = "policy.toml";
+const DEV_AUDIT_LOG: &str = "audit.log";
 
-    // 3. Initialize the MCP stdio Transport layer
-    let mcp = McpTransport::new(&registry);
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Respect RUST_LOG if set, otherwise default to cortexd=info
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("cortexd=info"));
 
-    // 4. Run the JSON-RPC loop over stdin/stdout
-    // The policy engine and audit logging are deferred as requested 
-    // for MVP brevity, but the architecture supports inserting 
-    // a Policy wrapper around the `registry.call_tool` invocation.
-    if let Err(e) = mcp.run_stdio_loop() {
-        eprintln!("cortexd stdio loop exited with error: {}", e);
-    }
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
+
+    tracing::info!("Starting Cortexd Linux Controller MCP server");
+
+    // Try production path first, fall back to dev path
+    let policy_path = if std::path::Path::new(DEFAULT_POLICY_PATH).exists() {
+        DEFAULT_POLICY_PATH
+    } else {
+        DEV_POLICY_PATH
+    };
+
+    let policy = Policy::load_from_file(policy_path).unwrap_or_else(|err| {
+        tracing::warn!("Failed to load {} ({}). Defaulting to Deny-All.", policy_path, err);
+        Policy::default()
+    });
+    tracing::info!("Loaded policy from {}", policy_path);
+
+    let audit_path = if std::path::Path::new(DEFAULT_AUDIT_LOG)
+        .parent()
+        .is_some_and(|p| p.exists())
+    {
+        DEFAULT_AUDIT_LOG
+    } else {
+        DEV_AUDIT_LOG
+    };
+    let audit_logger = AuditLogger::new(audit_path);
+    tracing::info!("Audit log: {}", audit_path);
+
+    let dbus_conn = zbus::Connection::system().await?;
+
+    let engine = CortexdEngine::new(dbus_conn, policy, audit_logger);
+
+    let service = engine.serve(rmcp::transport::stdio()).await?;
+
+    // Wait for shutdown — client disconnect closes stdin, service.waiting() handles it.
+    // For future daemon mode (HTTP transport), add SIGINT/SIGTERM handling here:
+    //   tokio::select! {
+    //       _ = service.waiting() => {},
+    //       _ = tokio::signal::ctrl_c() => { tracing::info!("Received SIGINT"); },
+    //   }
+    service.waiting().await?;
+
+    tracing::info!("Cortexd shutting down cleanly");
+    Ok(())
 }

@@ -4,8 +4,20 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-nix = { version = "0.31.1", features = ["fs"] }
+anyhow = "1"
+bollard = "0.18"
+futures = "0.3"
+nix = { version = "0.29", features = ["fs", "user"] }
+procfs = { version = "0.17", features = ["serde1"] }
+rmcp = { version = "0.16", features = ["server", "transport-io", "macros"] }
+netlink-packet-route = "0.19"
+rtnetlink = "0.14"
+schemars = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+time = { version = "0.3.47", features = ["formatting", "macros"] }
 tokio = { version = "1.0", features = ["full"] }
-zbus = "4.0"
+toml = "1.0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zbus = { version = "4.0", default-features = false, features = ["tokio"] }

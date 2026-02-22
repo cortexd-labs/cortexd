@@ -1,2 +1,2 @@
-pub mod procfs;
+pub mod network;
 pub mod systemd;
