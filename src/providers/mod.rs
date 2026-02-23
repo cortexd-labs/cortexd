@@ -1,8 +1,15 @@
 pub mod container;
+pub mod desktop;
 pub mod file;
+pub mod hardware;
+pub mod identity;
 pub mod log;
 pub mod network;
 pub mod package;
 pub mod process;
+pub mod schedule;
+pub mod security;
 pub mod service;
+pub mod storage;
 pub mod system;
+pub mod time;

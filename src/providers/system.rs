@@ -12,6 +12,8 @@ pub trait SystemProvider: Send + Sync {
     async fn system_memory(&self) -> anyhow::Result<Value>;
     async fn system_disk(&self) -> anyhow::Result<Value>;
     async fn system_uptime(&self) -> anyhow::Result<Value>;
+    async fn system_load(&self) -> anyhow::Result<Value>;
+    async fn system_kernel(&self) -> anyhow::Result<Value>;
 }
 
 pub struct LinuxSystemProvider;
@@ -126,6 +128,81 @@ impl SystemProvider for LinuxSystemProvider {
         "idle_seconds": uptime.idle,
     }))
     }
+
+    async fn system_load(&self) -> anyhow::Result<Value> {
+        let loadavg = LoadAverage::current()?;
+        let stats = procfs::KernelStats::current()?;
+        let running = stats.procs_running.unwrap_or(0);
+        let total = stats.procs_blocked.unwrap_or(0) + running;
+        Ok(serde_json::json!({
+            "load_1": loadavg.one,
+            "load_5": loadavg.five,
+            "load_15": loadavg.fifteen,
+            "processes_running": running,
+            "processes_total": total,
+        }))
+    }
+
+    async fn system_kernel(&self) -> anyhow::Result<Value> {
+        let uname = nix::sys::utsname::uname()?;
+        let cmdline = tokio::fs::read_to_string("/proc/cmdline").await
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let modules_raw = tokio::fs::read_to_string("/proc/modules").await
+            .unwrap_or_default();
+        let modules: Vec<&str> = modules_raw.lines()
+            .take(50)
+            .filter_map(|l| l.split_whitespace().next())
+            .collect();
+        Ok(serde_json::json!({
+            "version": uname.release().to_string_lossy(),
+            "machine": uname.machine().to_string_lossy(),
+            "cmdline": cmdline,
+            "modules_loaded": modules,
+        }))
+    }
+}
+
+/// D-Bus proxy for logind (org.freedesktop.login1.Manager).
+/// Used to trigger a clean reboot without spawning a subprocess.
+#[zbus::proxy(
+    interface = "org.freedesktop.login1.Manager",
+    default_service = "org.freedesktop.login1",
+    default_path = "/org/freedesktop/login1"
+)]
+trait Login1Manager {
+    /// Trigger a system reboot.  `interactive = false` skips polkit prompts.
+    fn reboot(&self, interactive: bool) -> zbus::Result<()>;
+}
+
+/// Reboot the machine via D-Bus org.freedesktop.login1.Manager.Reboot().
+/// Requires the caller to hold a system D-Bus connection.
+pub async fn system_reboot(conn: &zbus::Connection) -> anyhow::Result<Value> {
+    let proxy = Login1ManagerProxy::new(conn).await
+        .map_err(|e| anyhow::anyhow!("login1 proxy error: {}", e))?;
+    proxy.reboot(false).await
+        .map_err(|e| anyhow::anyhow!("Reboot via login1 D-Bus failed: {}", e))?;
+    Ok(serde_json::json!({"status": "reboot initiated"}))
+}
+
+/// Set a kernel parameter by writing directly to /proc/sys/.
+/// Converts dotted notation (e.g. `net.ipv4.ip_forward`) to the sysfs path
+/// `/proc/sys/net/ipv4/ip_forward` — no subprocess required.
+pub async fn system_sysctl_set(key: &str, value: &str) -> anyhow::Result<Value> {
+    // Validate key: only allow safe sysctl key characters (no slashes, no traversal)
+    if key.is_empty() || key.len() > 256 {
+        anyhow::bail!("Invalid sysctl key length");
+    }
+    if !key.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-') {
+        anyhow::bail!("Invalid sysctl key: must contain only alphanumerics, dots, underscores, or hyphens");
+    }
+    // Convert dot-notation to path under /proc/sys/
+    let relative = key.replace('.', "/");
+    let path = format!("/proc/sys/{}", relative);
+    tokio::fs::write(&path, value).await
+        .map_err(|e| anyhow::anyhow!("Failed to set sysctl {} ({}): {}", key, path, e))?;
+    Ok(serde_json::json!({"key": key, "value": value, "path": path, "status": "ok"}))
 }
 
 #[cfg(test)]
@@ -176,5 +253,28 @@ mod tests {
         let provider = LinuxSystemProvider;
         let result = provider.system_uptime().await.unwrap();
         assert!(result.get("uptime_seconds").is_some(), "Should contain uptime in seconds");
+    }
+
+    #[tokio::test]
+    async fn test_system_load() {
+        let provider = LinuxSystemProvider;
+        let result = provider.system_load().await.unwrap();
+        assert!(result.get("load_1").is_some());
+        assert!(result.get("load_5").is_some());
+        assert!(result.get("load_15").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_system_kernel() {
+        let provider = LinuxSystemProvider;
+        let result = provider.system_kernel().await.unwrap();
+        assert!(result.get("version").is_some());
+        assert!(result.get("modules_loaded").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_sysctl_set_invalid_key() {
+        let result = system_sysctl_set("../../etc/passwd", "bad").await;
+        assert!(result.is_err(), "Traversal characters should be rejected");
     }
 }

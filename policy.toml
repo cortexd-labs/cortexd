@@ -50,3 +50,97 @@ effect = "allow"
 tools = [
     "package.*"
 ]
+
+[[rules]]
+id = "allow-identity-reads"
+description = "Allow reading user, group, sudoers, and SSH key information"
+effect = "allow"
+tools = [
+    "identity.users",
+    "identity.groups",
+    "identity.sudoers",
+    "identity.ssh-keys.list"
+]
+
+[[rules]]
+id = "allow-storage-reads"
+description = "Allow reading storage, block device, and filesystem information"
+effect = "allow"
+tools = [
+    "storage.block.list",
+    "storage.mounts.fstab",
+    "storage.lvm.list",
+    "storage.smart.health"
+]
+
+[[rules]]
+id = "allow-schedule-reads"
+description = "Allow reading cron jobs and systemd timers"
+effect = "allow"
+tools = [
+    "schedule.cron.list",
+    "schedule.timers.list"
+]
+
+[[rules]]
+id = "allow-security-reads"
+description = "Allow reading MAC status, certificates, and audit rules"
+effect = "allow"
+tools = [
+    "security.mac.status",
+    "security.certs.check",
+    "security.auditd.rules"
+]
+
+[[rules]]
+id = "allow-time-reads"
+description = "Allow reading time synchronization status"
+effect = "allow"
+tools = [
+    "time.status"
+]
+
+[[rules]]
+id = "allow-hardware-reads"
+description = "Allow reading hardware sensors, PCI devices, and USB devices"
+effect = "allow"
+tools = [
+    "hardware.sensors",
+    "hardware.pci",
+    "hardware.usb"
+]
+
+[[rules]]
+id = "allow-desktop-reads"
+description = "Allow reading desktop environment state (windows, media, theme, volume)"
+effect = "allow"
+tools = [
+    "desktop.windows",
+    "desktop.apps",
+    "desktop.clipboard",
+    "desktop.media",
+    "desktop.theme",
+    "desktop.volume"
+]
+
+# --- Mutating / privileged tools (denied by default unless explicitly enabled below) ---
+#
+# To enable individual tools, add a rule such as:
+#
+# [[rules]]
+# id = "allow-service-mutations"
+# effect = "allow"
+# tools = ["service.start", "service.stop", "service.restart", "service.enable", "service.disable"]
+#
+# Dangerous tools (kept denied by default):
+#   service.start, service.stop, service.restart, service.enable, service.disable
+#   process.kill, process.signal, process.nice
+#   system.reboot, system.sysctl.set
+#   network.firewall.add, network.firewall.remove
+#   file.write, file.mkdir, file.chmod
+#   package.install, package.update, package.remove
+#   storage.mount, storage.unmount
+#   identity.ssh-keys.add, identity.ssh-keys.remove, identity.user.lock
+#   time.sync
+#   schedule.cron.add, schedule.cron.remove
+#   desktop.focus, desktop.close, desktop.launch, desktop.set-volume, desktop.set-theme, desktop.notify

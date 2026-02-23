@@ -172,6 +172,155 @@ pub fn active_connections() -> anyhow::Result<Value> {
     Ok(serde_json::json!(conns))
 }
 
+/// Build an inode → (pid, process_name) map from /proc/*/fd/ symlinks.
+fn build_inode_pid_map() -> std::collections::HashMap<u64, (i32, String)> {
+    let mut map = std::collections::HashMap::new();
+    let Ok(dir) = std::fs::read_dir("/proc") else { return map };
+    for entry in dir.flatten() {
+        let name = entry.file_name();
+        let pid_str = name.to_string_lossy();
+        let Ok(pid) = pid_str.parse::<i32>() else { continue };
+        let fd_dir = format!("/proc/{}/fd", pid);
+        let Ok(fds) = std::fs::read_dir(&fd_dir) else { continue };
+        let comm = std::fs::read_to_string(format!("/proc/{}/comm", pid))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        for fd in fds.flatten() {
+            if let Ok(target) = std::fs::read_link(fd.path()) {
+                let t = target.to_string_lossy();
+                // socket:[inode]
+                if t.starts_with("socket:[") && t.ends_with(']') {
+                    if let Ok(inode) = t[8..t.len()-1].parse::<u64>() {
+                        map.insert(inode, (pid, comm.clone()));
+                    }
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Listening ports with PID and process name.
+pub fn listening_ports() -> anyhow::Result<Value> {
+    let inode_map = build_inode_pid_map();
+    let mut ports = Vec::new();
+
+    macro_rules! add_listen {
+        ($entries:expr, $proto:expr) => {
+            if let Ok(entries) = $entries {
+                for e in entries {
+                    if format!("{:?}", e.state) == "Listen" {
+                        let (pid, name) = inode_map.get(&e.inode)
+                            .cloned()
+                            .unwrap_or((-1, String::new()));
+                        ports.push(serde_json::json!({
+                            "protocol": $proto,
+                            "local_addr": format!("{}:{}", e.local_address.ip(), e.local_address.port()),
+                            "port": e.local_address.port(),
+                            "inode": e.inode,
+                            "pid": pid,
+                            "process": name,
+                        }));
+                    }
+                }
+            }
+        };
+    }
+
+    add_listen!(procfs::net::tcp(), "tcp");
+    add_listen!(procfs::net::tcp6(), "tcp6");
+    add_listen!(procfs::net::udp(), "udp");
+    add_listen!(procfs::net::udp6(), "udp6");
+
+    ports.sort_by_key(|p| p["port"].as_u64().unwrap_or(0));
+    Ok(serde_json::json!(ports))
+}
+
+/// Current DNS resolvers and search domains from /etc/resolv.conf.
+pub fn dns_config() -> anyhow::Result<Value> {
+    let content = std::fs::read_to_string("/etc/resolv.conf")
+        .unwrap_or_default();
+    let mut nameservers: Vec<&str> = Vec::new();
+    let mut search: Vec<&str> = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('#') { continue; }
+        if let Some(rest) = line.strip_prefix("nameserver") {
+            let ns = rest.trim();
+            if !ns.is_empty() { nameservers.push(ns); }
+        } else if let Some(rest) = line.strip_prefix("search") {
+            search.extend(rest.split_whitespace());
+        } else if let Some(rest) = line.strip_prefix("domain") {
+            search.extend(rest.split_whitespace());
+        }
+    }
+    Ok(serde_json::json!({
+        "nameservers": nameservers,
+        "search_domains": search,
+    }))
+}
+
+/// Validate an iptables chain name (alphanumeric + _ -, max 30 chars).
+fn validate_chain(chain: &str) -> anyhow::Result<()> {
+    if chain.is_empty() || chain.len() > 30 {
+        anyhow::bail!("Invalid chain name length");
+    }
+    if !chain.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        anyhow::bail!("Invalid chain name: {}", chain);
+    }
+    Ok(())
+}
+
+/// Validate a single iptables rule argument token (no shell metacharacters).
+fn validate_rule_token(token: &str) -> anyhow::Result<()> {
+    // Allow: alphanumeric, ., /, -, _, :, space (for CIDR, ports, etc.)
+    if token.chars().any(|c| matches!(c, ';' | '|' | '&' | '`' | '$' | '(' | ')' | '<' | '>' | '!' | '\n' | '\r')) {
+        anyhow::bail!("Rule token contains unsafe character: {}", token);
+    }
+    Ok(())
+}
+
+/// Add an iptables rule. `rule_args` is a space-separated rule string.
+pub async fn firewall_add(table: &str, chain: &str, rule_args: &str) -> anyhow::Result<Value> {
+    validate_chain(chain)?;
+    validate_chain(table)?;
+    for token in rule_args.split_whitespace() {
+        validate_rule_token(token)?;
+    }
+    let mut args = vec!["-t".to_string(), table.to_string(), "-A".to_string(), chain.to_string()];
+    args.extend(rule_args.split_whitespace().map(|s| s.to_string()));
+    let output = tokio::process::Command::new("iptables")
+        .args(&args)
+        .output()
+        .await?;
+    if output.status.success() {
+        Ok(serde_json::json!({"status": "rule added", "chain": chain, "rule": rule_args}))
+    } else {
+        anyhow::bail!("iptables failed: {}", String::from_utf8_lossy(&output.stderr))
+    }
+}
+
+/// Remove an iptables rule. `rule_args` is a space-separated rule string.
+pub async fn firewall_remove(table: &str, chain: &str, rule_args: &str) -> anyhow::Result<Value> {
+    validate_chain(chain)?;
+    validate_chain(table)?;
+    for token in rule_args.split_whitespace() {
+        validate_rule_token(token)?;
+    }
+    let mut args = vec!["-t".to_string(), table.to_string(), "-D".to_string(), chain.to_string()];
+    args.extend(rule_args.split_whitespace().map(|s| s.to_string()));
+    let output = tokio::process::Command::new("iptables")
+        .args(&args)
+        .output()
+        .await?;
+    if output.status.success() {
+        Ok(serde_json::json!({"status": "rule removed", "chain": chain, "rule": rule_args}))
+    } else {
+        anyhow::bail!("iptables failed: {}", String::from_utf8_lossy(&output.stderr))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,8 +357,31 @@ mod tests {
     fn test_active_connections() {
         let result = active_connections().unwrap();
         let arr = result.as_array().expect("Should return array");
-        // Kernel always has some TCP sockets
-        // arr is already a Vec obtained from .as_array(), so we know it's valid
         assert!(!arr.is_empty() || arr.is_empty(), "Should be a valid array");
+    }
+
+    #[test]
+    fn test_listening_ports() {
+        let result = listening_ports().unwrap();
+        assert!(result.is_array());
+    }
+
+    #[test]
+    fn test_dns_config() {
+        let result = dns_config().unwrap();
+        assert!(result.get("nameservers").is_some());
+        assert!(result.get("search_domains").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_firewall_add_invalid_chain() {
+        let result = firewall_add("filter", "INVALID;CHAIN", "-j ACCEPT").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_firewall_add_invalid_rule() {
+        let result = firewall_add("filter", "INPUT", "-j $(rm -rf /)").await;
+        assert!(result.is_err());
     }
 }

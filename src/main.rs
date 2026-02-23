@@ -61,8 +61,16 @@ async fn main() -> anyhow::Result<()> {
     let audit_logger = AuditLogger::new(audit_path);
     tracing::info!("Audit log: {}", audit_path);
 
-    let dbus_conn = zbus::Connection::system().await?;
-    let dbus_conn = Arc::new(dbus_conn);
+    let dbus_conn = Arc::new(zbus::Connection::system().await?);
+    let session_conn = Arc::new(
+        zbus::Connection::session().await
+            .unwrap_or_else(|err| {
+                tracing::warn!("Session D-Bus unavailable ({}). Desktop tools will fail.", err);
+                // We can't easily create a no-op Connection, so we panic in non-headless setups.
+                // In headless/server deployments, disable the desktop provider via policy.
+                panic!("Session D-Bus required. Set DBUS_SESSION_BUS_ADDRESS or disable desktop tools in policy.toml.");
+            })
+    );
     let policy = Arc::new(policy);
     let audit_logger = Arc::new(audit_logger);
     let system_provider: Arc<dyn SystemProvider> = Arc::new(LinuxSystemProvider);
@@ -73,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
         move || {
             let engine = NeurondEngine::new(
                 dbus_conn.clone(),
+                session_conn.clone(),
                 policy.clone(),
                 audit_logger.clone(),
                 system_provider.clone()
