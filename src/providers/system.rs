@@ -3,15 +3,29 @@ use std::time::Duration;
 use procfs::process::Process;
 use nix::sys::statvfs::statvfs;
 use serde_json::Value;
+use async_trait::async_trait;
 
-pub async fn system_info() -> anyhow::Result<Value> {
-    let meminfo = Meminfo::current()?;
-    let cpuinfo = CpuInfo::current()?;
-    let loadavg = LoadAverage::current()?;
-    let uptime = Uptime::current()?;
-    let uname = nix::sys::utsname::uname()?;
-    let hostname = uname.nodename().to_string_lossy().into_owned();
-    let osrelease = uname.release().to_string_lossy().into_owned();
+#[async_trait]
+pub trait SystemProvider: Send + Sync {
+    async fn system_info(&self) -> anyhow::Result<Value>;
+    async fn system_cpu(&self) -> anyhow::Result<Value>;
+    async fn system_memory(&self) -> anyhow::Result<Value>;
+    async fn system_disk(&self) -> anyhow::Result<Value>;
+    async fn system_uptime(&self) -> anyhow::Result<Value>;
+}
+
+pub struct LinuxSystemProvider;
+
+#[async_trait]
+impl SystemProvider for LinuxSystemProvider {
+    async fn system_info(&self) -> anyhow::Result<Value> {
+        let meminfo = Meminfo::current()?;
+        let cpuinfo = CpuInfo::current()?;
+        let loadavg = LoadAverage::current()?;
+        let uptime = Uptime::current()?;
+        let uname = nix::sys::utsname::uname()?;
+        let hostname = uname.nodename().to_string_lossy().into_owned();
+        let osrelease = uname.release().to_string_lossy().into_owned();
 
     Ok(serde_json::json!({
         "hostname": hostname,
@@ -31,10 +45,10 @@ pub async fn system_info() -> anyhow::Result<Value> {
             "swap_free_kb": meminfo.swap_free,
         }
     }))
-}
+    }
 
-pub async fn system_cpu() -> anyhow::Result<Value> {
-    let cpuinfo = CpuInfo::current()?;
+    async fn system_cpu(&self) -> anyhow::Result<Value> {
+        let cpuinfo = CpuInfo::current()?;
     let stat1 = KernelStats::current()?;
     tokio::time::sleep(Duration::from_millis(250)).await;
     let stat2 = KernelStats::current()?;
@@ -63,20 +77,20 @@ pub async fn system_cpu() -> anyhow::Result<Value> {
         "cores": cpuinfo.num_cores(),
         "total_usage_percent": (cpu_pct * 10.0).round() / 10.0,
     }))
-}
+    }
 
-pub async fn system_memory() -> anyhow::Result<Value> {
-    let meminfo = Meminfo::current()?;
-    Ok(serde_json::json!({
+    async fn system_memory(&self) -> anyhow::Result<Value> {
+        let meminfo = Meminfo::current()?;
+        Ok(serde_json::json!({
         "total_mb": meminfo.mem_total / 1024,
         "free_mb": meminfo.mem_free / 1024,
         "available_mb": meminfo.mem_available.unwrap_or(0) / 1024,
     }))
-}
+    }
 
-pub async fn system_disk() -> anyhow::Result<Value> {
-    let process = Process::myself()?;
-    let mounts = process.mountinfo()?;
+    async fn system_disk(&self) -> anyhow::Result<Value> {
+        let process = Process::myself()?;
+        let mounts = process.mountinfo()?;
 
     let skip_fs = ["tmpfs", "proc", "sysfs", "devtmpfs", "devpts",
                    "cgroup", "cgroup2", "pstore", "securityfs",
@@ -102,16 +116,16 @@ pub async fn system_disk() -> anyhow::Result<Value> {
                 }));
             }
         }
+        }
+        Ok(serde_json::json!(results))
     }
-    Ok(serde_json::json!(results))
-}
-
-pub async fn system_uptime() -> anyhow::Result<Value> {
-    let uptime = Uptime::current()?;
+    async fn system_uptime(&self) -> anyhow::Result<Value> {
+        let uptime = Uptime::current()?;
     Ok(serde_json::json!({
         "uptime_seconds": uptime.uptime,
         "idle_seconds": uptime.idle,
     }))
+    }
 }
 
 #[cfg(test)]
@@ -120,7 +134,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_system_info() {
-        let result = system_info().await.unwrap();
+        let provider = LinuxSystemProvider;
+        let result = provider.system_info().await.unwrap();
         assert!(result.get("hostname").is_some(), "Should contain hostname");
         assert!(result.get("kernel").is_some(), "Should contain kernel version");
         assert!(result.get("uptime_seconds").is_some(), "Should contain uptime");
@@ -128,13 +143,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_system_cpu() {
-        let result = system_cpu().await.unwrap();
+        let provider = LinuxSystemProvider;
+        let result = provider.system_cpu().await.unwrap();
         assert!(result.get("total_usage_percent").is_some(), "Should contain CPU usage");
     }
 
     #[tokio::test]
     async fn test_system_memory() {
-        let result = system_memory().await.unwrap();
+        let provider = LinuxSystemProvider;
+        let result = provider.system_memory().await.unwrap();
         assert!(result.get("total_mb").is_some(), "Should contain total memory");
         assert!(result.get("free_mb").is_some(), "Should contain free memory");
         
@@ -144,7 +161,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_system_disk() {
-        let result = system_disk().await.unwrap();
+        let provider = LinuxSystemProvider;
+        let result = provider.system_disk().await.unwrap();
         let arr = result.as_array().expect("system_disk should return an array");
         assert!(!arr.is_empty(), "Should find at least one mount");
         
@@ -155,7 +173,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_system_uptime() {
-        let result = system_uptime().await.unwrap();
+        let provider = LinuxSystemProvider;
+        let result = provider.system_uptime().await.unwrap();
         assert!(result.get("uptime_seconds").is_some(), "Should contain uptime in seconds");
     }
 }

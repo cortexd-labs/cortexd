@@ -2,11 +2,18 @@ pub mod engine;
 pub mod linux;
 pub mod providers;
 
-use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
+use std::sync::Arc;
+use tokio::net::TcpListener;
+use axum::Router;
+use rmcp::transport::streamable_http_server::{
+    StreamableHttpService,
+    session::local::LocalSessionManager,
+};
 use crate::engine::server::NeurondEngine;
 use crate::engine::policy::Policy;
 use crate::engine::audit::AuditLogger;
+use crate::providers::system::{SystemProvider, LinuxSystemProvider};
 
 /// Default paths for configuration and logging.
 /// In production, these should be overridden by CLI args or environment variables.
@@ -55,19 +62,31 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Audit log: {}", audit_path);
 
     let dbus_conn = zbus::Connection::system().await?;
+    let dbus_conn = Arc::new(dbus_conn);
+    let policy = Arc::new(policy);
+    let audit_logger = Arc::new(audit_logger);
+    let system_provider: Arc<dyn SystemProvider> = Arc::new(LinuxSystemProvider);
 
-    let engine = NeurondEngine::new(dbus_conn, policy, audit_logger);
+    let session_manager = LocalSessionManager::default();
 
-    let service = engine.serve(rmcp::transport::stdio()).await?;
+    let mcp_service = StreamableHttpService::new(
+        move || {
+            let engine = NeurondEngine::new(
+                dbus_conn.clone(),
+                policy.clone(),
+                audit_logger.clone(),
+                system_provider.clone()
+            );
+            Ok(engine)
+        },
+        session_manager.into(),
+        Default::default(),
+    );
 
-    // Wait for shutdown — client disconnect closes stdin, service.waiting() handles it.
-    // For future daemon mode (HTTP transport), add SIGINT/SIGTERM handling here:
-    //   tokio::select! {
-    //       _ = service.waiting() => {},
-    //       _ = tokio::signal::ctrl_c() => { tracing::info!("Received SIGINT"); },
-    //   }
-    service.waiting().await?;
-
-    tracing::info!("Neurond shutting down cleanly");
+    let app = Router::new().nest_service("/api/v1/mcp", mcp_service);
+    let listener = TcpListener::bind("0.0.0.0:8080").await?;
+    
+    tracing::info!("Server listening on http://0.0.0.0:8080");
+    axum::serve(listener, app).await?;
     Ok(())
 }

@@ -1,6 +1,7 @@
 /target/
 **/*.rs.bk
 Cargo.lock
+specs/
 
 # IDE
 .vscode/

@@ -7,13 +7,16 @@ use rmcp::{
 use zbus::Connection;
 use crate::engine::policy::Policy;
 use crate::engine::audit::AuditLogger;
+use crate::providers::system::SystemProvider;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct NeurondEngine {
     tool_router: ToolRouter<Self>,
-    pub dbus_conn: Connection,
-    pub policy: Policy,
-    pub audit: AuditLogger,
+    pub dbus_conn: Arc<Connection>,
+    pub policy: Arc<Policy>,
+    pub audit: Arc<AuditLogger>,
+    pub system_provider: Arc<dyn SystemProvider>,
 }
 
 impl NeurondEngine {
@@ -109,12 +112,13 @@ pub struct ContainerStatsArgs {
 
 #[tool_router]
 impl NeurondEngine {
-    pub fn new(dbus_conn: Connection, policy: Policy, audit: AuditLogger) -> Self {
+    pub fn new(dbus_conn: Arc<Connection>, policy: Arc<Policy>, audit: Arc<AuditLogger>, system_provider: Arc<dyn SystemProvider>) -> Self {
         Self {
             tool_router: Self::tool_router(),
             dbus_conn,
             policy,
             audit,
+            system_provider,
         }
     }
 
@@ -126,7 +130,7 @@ impl NeurondEngine {
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
 
-        match crate::providers::system::system_info().await {
+        match self.system_provider.system_info().await {
             Ok(info) => {
                 self.complete_tool_call(tool_name, &params, start, true).await;
                 Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&info).unwrap_or_default())]))
@@ -144,7 +148,7 @@ impl NeurondEngine {
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
 
-        match crate::providers::system::system_cpu().await {
+        match self.system_provider.system_cpu().await {
             Ok(info) => {
                 self.complete_tool_call(tool_name, &params, start, true).await;
                 Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&info).unwrap_or_default())]))
@@ -162,7 +166,7 @@ impl NeurondEngine {
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
 
-        match crate::providers::system::system_memory().await {
+        match self.system_provider.system_memory().await {
             Ok(info) => {
                 self.complete_tool_call(tool_name, &params, start, true).await;
                 Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&info).unwrap_or_default())]))
@@ -180,7 +184,7 @@ impl NeurondEngine {
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
 
-        match crate::providers::system::system_disk().await {
+        match self.system_provider.system_disk().await {
             Ok(info) => {
                 self.complete_tool_call(tool_name, &params, start, true).await;
                 Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&info).unwrap_or_default())]))
@@ -198,7 +202,7 @@ impl NeurondEngine {
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
 
-        match crate::providers::system::system_uptime().await {
+        match self.system_provider.system_uptime().await {
             Ok(info) => {
                 self.complete_tool_call(tool_name, &params, start, true).await;
                 Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&info).unwrap_or_default())]))
