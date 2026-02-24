@@ -1025,6 +1025,674 @@ fn test_explicit_deny_overrides_allow() {
 
 ---
 
+## Roadmap — Security Hardening
+
+---
+
+### [ ] FEAT: HTTP endpoint authentication (bearer token / mTLS)
+
+**Category:** Security — P0 before any network exposure
+**Files:** `src/main.rs`, `src/engine/server.rs`, `Cargo.toml`
+
+**Problem:**
+The server listens on `0.0.0.0:8080` with zero authentication. The policy engine controls which tools are callable, but not who is allowed to call them. Any process on the LAN that can reach port 8080 can invoke any allowed tool. Before mDNS announcement or multi-node deployment, this is effectively an unauthenticated privileged API.
+
+**Fix — Phase 1: Static bearer token (minimal viable)**
+Add an Axum middleware layer that checks an `Authorization: Bearer <token>` header on every request:
+
+```rust
+// src/engine/auth.rs
+use axum::{middleware::Next, extract::{Request, State}, response::Response, http::StatusCode};
+
+pub async fn bearer_auth(
+    State(expected): State<Arc<String>>,
+    req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let token = req.headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    match token {
+        Some(t) if constant_time_eq(t.as_bytes(), expected.as_bytes()) => Ok(next.run(req).await),
+        _ => Err(StatusCode::UNAUTHORIZED),
+    }
+}
+```
+
+Use `subtle::ConstantTimeEq` (add `subtle = "2"` to Cargo.toml) for timing-safe comparison.
+
+Token is loaded from:
+1. `NEUROND_AUTH_TOKEN` env var
+2. `/etc/neurond/auth_token` file (0600, owned by neurond user)
+3. If neither set: generate a random token at startup, print it to stderr once, and refuse to start silently
+
+Wire into `main.rs`:
+```rust
+let app = Router::new()
+    .nest_service("/api/v1/mcp", mcp_service)
+    .layer(axum::middleware::from_fn_with_state(
+        Arc::new(auth_token),
+        bearer_auth,
+    ));
+```
+
+**Fix — Phase 2: mTLS (for multi-node / cortexd integration)**
+Add `rustls` + `tokio-rustls` to serve TLS, with optional client certificate verification:
+```toml
+[dependencies]
+rustls = "0.23"
+tokio-rustls = "0.26"
+rcgen = "0.13"      # for dev: auto-generate self-signed cert at startup
+```
+
+At startup:
+- Load server cert/key from `/etc/neurond/server.crt` + `/etc/neurond/server.key`
+- Optionally load CA cert for client verification from `/etc/neurond/ca.crt`
+- If no cert files exist and `NEUROND_DEV=1`: auto-generate ephemeral self-signed cert via `rcgen`, log fingerprint to stderr
+
+**Tests:**
+- Request without `Authorization` header returns `401`
+- Request with wrong token returns `401`
+- Request with correct token proceeds to policy check
+- Timing attack: response time for wrong token is constant regardless of token length (test with criterion or manual timing)
+
+---
+
+### [ ] FEAT: Parameter-level policy rules
+
+**Category:** Security / Policy Engine
+**Files:** `src/engine/policy.rs`, `policy.toml`
+
+**Problem:**
+The current policy engine operates at tool-name granularity only. You can allow `file.read` or deny `file.read`, but you cannot express "allow `file.read` only for paths under `/var/log`" or "allow `process.signal` only for signal 15 (SIGTERM), not 9 (SIGKILL)". All parameter-level restrictions are currently hardcoded in the provider logic.
+
+**Goal:**
+Move parameter constraints out of provider code and into policy, making the policy the single source of truth for both tool-level and argument-level access control.
+
+**Proposed policy syntax:**
+```toml
+[[rules]]
+id = "file-read-logs-only"
+effect = "allow"
+tools = ["file.read", "file.tail", "file.search"]
+conditions = [
+  { param = "path", matches = "^/var/log/.*" },
+]
+
+[[rules]]
+id = "allow-sigterm-only"
+effect = "allow"
+tools = ["process.signal"]
+conditions = [
+  { param = "signum", equals = 15 },
+]
+
+[[rules]]
+id = "allow-package-info-no-install"
+effect = "allow"
+tools = ["package.*"]
+conditions = [
+  { param = "name", matches = "^[a-z0-9][a-z0-9+\\-.]{1,64}$" }
+]
+```
+
+**Implementation:**
+```rust
+// src/engine/policy.rs
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+pub enum Condition {
+    Matches { param: String, matches: String },       // regex on string param
+    Equals   { param: String, equals: serde_json::Value }, // exact equality
+    LessThan { param: String, less_than: i64 },
+    GreaterThan { param: String, greater_than: i64 },
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct PolicyRule {
+    pub id: String,
+    pub description: Option<String>,
+    pub effect: Effect,
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub conditions: Vec<Condition>,   // NEW: all conditions must match
+}
+```
+
+Policy evaluation changes:
+```rust
+pub fn is_allowed(&self, tool_name: &str, params: &serde_json::Value) -> bool {
+    for rule in &self.rules {
+        if rule.tools.iter().any(|p| wildcard_match(p, tool_name)) {
+            if conditions_match(&rule.conditions, params) {
+                match rule.effect {
+                    Effect::Deny  => return false,
+                    Effect::Allow => { /* continue, collect allows */ }
+                }
+            }
+        }
+    }
+    // ...
+}
+
+fn conditions_match(conditions: &[Condition], params: &serde_json::Value) -> bool {
+    conditions.iter().all(|c| match c {
+        Condition::Matches { param, matches } => {
+            let val = params.get(param).and_then(|v| v.as_str()).unwrap_or("");
+            regex::Regex::new(matches).map(|r| r.is_match(val)).unwrap_or(false)
+        },
+        Condition::Equals { param, equals } => params.get(param) == Some(equals),
+        // ...
+    })
+}
+```
+
+Add `regex = "1"` to Cargo.toml.
+
+Update `start_tool_call` in `server.rs` to pass `params` to `policy.is_allowed(tool, params)`.
+
+**Tests:**
+- Rule with `matches` condition: only paths matching the regex are allowed
+- Rule with `equals` condition: exact param match works
+- Rule with no conditions: behaves identically to current behaviour
+- Deny-wins: a deny condition match blocks even if an allow rule also matches
+
+---
+
+### [ ] FEAT: Health and readiness endpoints
+
+**Category:** Reliability / Operations
+**Files:** `src/main.rs`
+
+**Problem:**
+No `/health` or `/ready` endpoint. Required for:
+- mDNS-discovered nodes to be verified alive before cortexd routes to them
+- Container orchestrators (Docker health check, k8s liveness/readiness probes)
+- Load balancer health checks
+- Simple uptime monitoring
+
+**Fix:**
+Add two lightweight endpoints alongside the MCP service:
+
+```rust
+// src/engine/health.rs
+use axum::{Json, http::StatusCode};
+use serde::Serialize;
+
+#[derive(Serialize)]
+pub struct HealthResponse {
+    pub status: &'static str,
+    pub version: &'static str,
+    pub uptime_seconds: u64,
+}
+
+#[derive(Serialize)]
+pub struct ReadyResponse {
+    pub ready: bool,
+    pub checks: ReadyChecks,
+}
+
+#[derive(Serialize)]
+pub struct ReadyChecks {
+    pub dbus_system: bool,
+    pub dbus_session: bool,
+    pub policy_loaded: bool,
+    pub audit_writable: bool,
+}
+
+pub async fn health() -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "ok",
+        version: env!("CARGO_PKG_VERSION"),
+        uptime_seconds: STARTUP_TIME.elapsed().as_secs(),
+    })
+}
+
+pub async fn ready(State(state): State<Arc<AppState>>) -> (StatusCode, Json<ReadyResponse>) {
+    let dbus_ok  = state.dbus_conn.inner().is_some();      // ping D-Bus
+    let policy_ok = true;  // already loaded at startup
+    let audit_ok  = std::fs::OpenOptions::new()
+        .append(true).create(true)
+        .open(&state.audit_path).is_ok();
+
+    let all_ok = dbus_ok && policy_ok && audit_ok;
+    let code = if all_ok { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    (code, Json(ReadyResponse {
+        ready: all_ok,
+        checks: ReadyChecks {
+            dbus_system: dbus_ok,
+            dbus_session: state.session_conn.is_some(),
+            policy_loaded: policy_ok,
+            audit_writable: audit_ok,
+        },
+    }))
+}
+```
+
+Wire into Router:
+```rust
+let app = Router::new()
+    .route("/health", get(health))
+    .route("/ready",  get(ready))
+    .nest_service("/api/v1/mcp", mcp_service);
+```
+
+`/health` is always 200 if the process is up (no auth required — safe to expose to load balancers).
+`/ready` returns 503 if any critical dependency is unavailable.
+
+---
+
+## Roadmap — MCP Proxy Provider
+
+---
+
+### [ ] FEAT: Upstream MCP proxy — stdio transport
+
+**Category:** New Feature
+**Files:** `src/providers/proxy.rs` (new), `src/engine/server.rs`, `Cargo.toml`
+
+**Problem / Goal:**
+`neurond` should act as a policy-enforcing multiplexer for other MCP servers. AI clients connect to one `neurond` endpoint and get access to all upstream MCPs (GitHub, Postgres, filesystem tools, etc.), with every proxied tool call going through neurond's policy engine and audit log. This is the primary value of the cortexd architecture: a single trust boundary over heterogeneous tool providers.
+
+**Config format** (extend `policy.toml` or a new `upstream.toml`):
+```toml
+[[upstream]]
+id = "github"
+transport = "stdio"
+command = ["npx", "-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }   # env var substitution
+prefix = "github"                             # tools become github.list_repos etc.
+restart_on_failure = true
+startup_timeout_secs = 10
+
+[[upstream]]
+id = "postgres"
+transport = "http"
+url = "http://localhost:9090/mcp"
+prefix = "db"
+auth = { type = "bearer", token_env = "PG_MCP_TOKEN" }
+```
+
+**Architecture:**
+```
+neurond
+  └── ProxyManager (src/engine/proxy.rs)
+       ├── UpstreamHandle { id, prefix, transport }
+       │     ├── StdioUpstream  → spawns child process, speaks JSON-RPC over stdin/stdout
+       │     └── HttpUpstream   → maintains HTTP+SSE connection to upstream MCP URL
+       └── tool registry: merged list of (prefixed) upstream tools + built-in tools
+```
+
+**Stdio upstream implementation:**
+```rust
+// src/engine/proxy.rs
+pub struct StdioUpstream {
+    pub id: String,
+    pub prefix: String,
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    stdout_lines: tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    next_id: std::sync::atomic::AtomicU64,
+}
+
+impl StdioUpstream {
+    pub async fn spawn(config: &UpstreamConfig) -> anyhow::Result<Self> {
+        let mut cmd = tokio::process::Command::new(&config.command[0]);
+        cmd.args(&config.command[1..])
+           .stdin(Stdio::piped())
+           .stdout(Stdio::piped())
+           .stderr(Stdio::null());  // or pipe stderr to tracing::debug
+        // Expand env vars
+        for (k, v) in &config.env {
+            cmd.env(k, expand_env_var(v));
+        }
+        let mut child = cmd.spawn()?;
+        let stdin  = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let reader = tokio::io::BufReader::new(stdout).lines();
+        Ok(Self { id: config.id.clone(), prefix: config.prefix.clone(),
+                  child, stdin, stdout_lines: reader,
+                  next_id: AtomicU64::new(1) })
+    }
+
+    /// Send a JSON-RPC request and wait for the matching response.
+    pub async fn call(&mut self, method: &str, params: serde_json::Value)
+        -> anyhow::Result<serde_json::Value>
+    {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": method, "params": params
+        });
+        self.stdin.write_all((req.to_string() + "\n").as_bytes()).await?;
+        // Read lines until we get the matching id
+        while let Some(line) = self.stdout_lines.next_line().await? {
+            if let Ok(resp) = serde_json::from_str::<serde_json::Value>(&line) {
+                if resp["id"] == id {
+                    return if let Some(err) = resp.get("error") {
+                        anyhow::bail!("upstream error: {}", err)
+                    } else {
+                        Ok(resp["result"].clone())
+                    };
+                }
+            }
+        }
+        anyhow::bail!("upstream closed without response for id {}", id)
+    }
+
+    /// Fetch the upstream's tool list and prefix each tool name.
+    pub async fn list_tools(&mut self) -> anyhow::Result<Vec<PrefixedTool>> {
+        let result = self.call("tools/list", serde_json::json!({})).await?;
+        let tools = result["tools"].as_array().cloned().unwrap_or_default();
+        Ok(tools.into_iter().map(|t| PrefixedTool {
+            prefixed_name: format!("{}.{}", self.prefix, t["name"].as_str().unwrap_or("")),
+            original_name: t["name"].as_str().unwrap_or("").to_string(),
+            upstream_id: self.id.clone(),
+            schema: t,
+        }).collect())
+    }
+}
+```
+
+**Integration with NeurondEngine:**
+- On startup, `ProxyManager::start_all()` spawns/connects all upstreams and collects their tool lists.
+- `NeurondEngine::list_tools()` returns built-in tools + all prefixed upstream tools.
+- `NeurondEngine::call_tool()` checks if the tool name matches a proxy prefix → routes to `ProxyManager::call(upstream_id, original_name, params)`.
+- Policy engine sees the prefixed name (`github.list_repos`) — can be allowed/denied like any built-in tool.
+- Every proxy call goes through `start_tool_call` (policy) and `complete_tool_call` (audit) — same path as built-in tools.
+
+**Lifecycle management:**
+```rust
+pub struct ProxyManager {
+    upstreams: HashMap<String, UpstreamHandle>,
+    config: Vec<UpstreamConfig>,
+}
+
+impl ProxyManager {
+    pub async fn restart_failed(&mut self) {
+        // Called periodically (e.g., every 5s) or on tool-call failure
+        for (id, handle) in &mut self.upstreams {
+            if handle.is_dead() && handle.config.restart_on_failure {
+                tracing::warn!("Upstream {} died, restarting", id);
+                match StdioUpstream::spawn(&handle.config).await {
+                    Ok(new) => *handle = UpstreamHandle::Stdio(new),
+                    Err(e)  => tracing::error!("Failed to restart {}: {}", id, e),
+                }
+            }
+        }
+    }
+}
+```
+
+**Tests:**
+- `test_stdio_upstream_call_roundtrip`: spawn a minimal echo MCP server (a small Rust binary in `tests/fixtures/`) and verify round-trip JSON-RPC
+- `test_proxy_tool_prefixing`: tool `list_repos` from upstream `github` appears as `github.list_repos` in neurond's tool list
+- `test_proxy_policy_enforced`: `github.list_repos` is denied by default; allowing it via policy makes it callable
+- `test_proxy_upstream_failure_graceful`: killing the upstream child returns an `Err` from the tool call, not a panic
+- `test_proxy_restart_on_failure`: after the upstream dies, it is restarted within 5 seconds
+
+---
+
+### [ ] FEAT: Upstream MCP proxy — HTTP+SSE transport
+
+**Category:** New Feature (depends on stdio proxy task above)
+**Files:** `src/engine/proxy.rs`
+
+**Problem:**
+Many MCP servers expose an HTTP+SSE endpoint rather than stdio. The proxy manager needs to support this transport.
+
+**Implementation:**
+```rust
+pub struct HttpUpstream {
+    pub id: String,
+    pub prefix: String,
+    client: reqwest::Client,
+    base_url: String,
+    auth: Option<BearerAuth>,
+}
+
+impl HttpUpstream {
+    pub async fn call(&self, method: &str, params: serde_json::Value)
+        -> anyhow::Result<serde_json::Value>
+    {
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": method, "params": params
+        });
+        let mut rb = self.client.post(&self.base_url).json(&req);
+        if let Some(ref auth) = self.auth {
+            rb = rb.bearer_auth(&auth.token);
+        }
+        let resp = rb.send().await?.error_for_status()?;
+        // For SSE: handle text/event-stream response (streaming results)
+        // For plain POST: parse JSON response directly
+        let body: serde_json::Value = resp.json().await?;
+        if let Some(err) = body.get("error") {
+            anyhow::bail!("upstream error: {}", err);
+        }
+        Ok(body["result"].clone())
+    }
+}
+```
+
+Add `reqwest = { version = "0.12", features = ["json", "stream"] }` to Cargo.toml (if not already present via another dep).
+
+**SSE streaming support:**
+For tools that return streaming results (long-running operations), use `reqwest`'s `bytes_stream()` + `futures::StreamExt` to parse SSE events and forward them through neurond's own SSE transport.
+
+---
+
+## Roadmap — Network Discovery
+
+---
+
+### [ ] FEAT: mDNS/DNS-SD self-announcement
+
+**Category:** New Feature (requires auth task to be complete first)
+**Files:** `src/engine/mdns.rs` (new), `src/main.rs`, `Cargo.toml`
+
+**Problem / Goal:**
+Each `neurond` node should announce itself on the local network so that `cortexd` (or any MCP-aware orchestrator) can discover it automatically — no manual configuration of IP addresses required. Same model as printers, AirPlay, and Chromecast devices.
+
+**Protocol:**
+- Service type: `_mcp._tcp.local.` (or `_neurond._tcp.local.` for neurond-specific discovery)
+- Instance name: hostname (e.g., `myserver._mcp._tcp.local.`)
+- TXT records carry metadata:
+  - `v=1` — protocol version
+  - `node=myserver.local` — FQDN
+  - `port=8080` — HTTP port
+  - `providers=system,process,service,log,network,file,container,package,identity,storage,schedule,security,time,hardware,desktop` — available providers
+  - `auth=bearer` — authentication method (`bearer`, `mtls`, `none`)
+  - `neurond=0.1.0` — neurond version
+
+**Rust crate:**
+```toml
+[dependencies]
+mdns-sd = "0.11"   # pure-Rust mDNS/DNS-SD, no Avahi dependency
+```
+
+`mdns-sd` uses `ServiceDaemon` which runs its own background thread. No `libavahi` needed.
+
+**Implementation:**
+```rust
+// src/engine/mdns.rs
+use mdns_sd::{ServiceDaemon, ServiceInfo};
+
+pub struct MdnsAnnouncer {
+    daemon: ServiceDaemon,
+    service_fullname: String,
+}
+
+impl MdnsAnnouncer {
+    pub fn start(port: u16, providers: &[&str], auth_method: &str)
+        -> anyhow::Result<Self>
+    {
+        let hostname = gethostname::gethostname()
+            .to_string_lossy()
+            .into_owned();
+
+        let daemon = ServiceDaemon::new()?;
+
+        let instance_name = &hostname;
+        let service_type  = "_mcp._tcp.local.";
+
+        let mut properties = std::collections::HashMap::new();
+        properties.insert("v".to_string(),         "1".to_string());
+        properties.insert("node".to_string(),       format!("{}.local", hostname));
+        properties.insert("neurond".to_string(),    env!("CARGO_PKG_VERSION").to_string());
+        properties.insert("providers".to_string(),  providers.join(","));
+        properties.insert("auth".to_string(),       auth_method.to_string());
+
+        // Resolve local IP addresses to announce
+        let addrs: Vec<std::net::Ipv4Addr> = local_ipaddress::get()
+            .into_iter()
+            .filter_map(|s| s.parse().ok())
+            .collect();
+
+        let service = ServiceInfo::new(
+            service_type,
+            instance_name,
+            &format!("{}.local.", hostname),
+            addrs.as_slice(),
+            port,
+            Some(properties),
+        )?;
+
+        daemon.register(service.clone())?;
+        tracing::info!("mDNS: announced {} on port {}", instance_name, port);
+
+        Ok(Self {
+            daemon,
+            service_fullname: service.get_fullname().to_string(),
+        })
+    }
+}
+
+impl Drop for MdnsAnnouncer {
+    fn drop(&mut self) {
+        // Send mDNS goodbye packet so cortexd removes the node immediately
+        let _ = self.daemon.unregister(&self.service_fullname);
+    }
+}
+```
+
+Add to `Cargo.toml`:
+```toml
+mdns-sd      = "0.11"
+gethostname  = "0.4"
+local-ip-address = "0.6"
+```
+
+Wire into `main.rs` after the server starts:
+```rust
+let providers = vec!["system", "process", "service", /* ... all 15 */];
+let _mdns = MdnsAnnouncer::start(8080, &providers, "bearer")
+    .unwrap_or_else(|e| {
+        tracing::warn!("mDNS announcement failed ({}). Discovery will not work.", e);
+        // Return a no-op announcer — not fatal
+    });
+// _mdns held for the lifetime of main, Drop sends goodbye on shutdown
+```
+
+**Security note — document clearly:**
+mDNS is unauthenticated and LAN-broadcast only. It is a _discovery hint_, not a trust mechanism. `cortexd` must complete an authenticated handshake (bearer token or mTLS) with the discovered node before routing any tool calls to it. mDNS is safe precisely because authentication is enforced at the connection layer, not the discovery layer.
+
+**Tests:**
+- `test_mdns_service_registers`: `ServiceDaemon` starts without error and service is registered
+- `test_mdns_goodbye_on_drop`: dropping `MdnsAnnouncer` sends an unregister call (mock ServiceDaemon)
+- `test_mdns_properties_contain_providers`: TXT record includes all provider names
+- `test_mdns_properties_contain_auth_method`: TXT record includes the correct auth string
+
+---
+
+### [ ] FEAT: cortexd integration — authenticated node registration
+
+**Category:** New Feature (companion to mDNS task)
+**Files:** `src/engine/registration.rs` (new), `src/main.rs`
+
+**Problem:**
+mDNS provides discovery on the LAN but no trust. For `cortexd` to safely route tool calls to a `neurond` node, there must be a secondary authenticated handshake. This prevents a rogue process from announcing itself on mDNS and intercepting tool calls.
+
+**Proposed flow:**
+```
+neurond startup
+  1. POST https://cortexd.host/nodes/register
+     Body: { node_id, hostname, port, providers, pubkey_fingerprint }
+     Auth: pre-shared registration token (from NEUROND_CORTEXD_TOKEN env var)
+  2. cortexd responds: { node_token: "<per-node JWT or opaque token>" }
+  3. neurond stores node_token; cortexd uses it to authenticate callbacks
+  4. Periodic heartbeat: POST /nodes/heartbeat { node_id, uptime_seconds }
+  5. On clean shutdown: POST /nodes/unregister { node_id }
+```
+
+**Implementation:**
+```rust
+// src/engine/registration.rs
+pub struct CortexdClient {
+    base_url: String,
+    registration_token: String,
+    node_token: Option<String>,
+    http: reqwest::Client,
+}
+
+impl CortexdClient {
+    pub async fn register(&mut self, node_info: &NodeInfo) -> anyhow::Result<()> {
+        let resp = self.http
+            .post(format!("{}/nodes/register", self.base_url))
+            .bearer_auth(&self.registration_token)
+            .json(node_info)
+            .send().await?
+            .error_for_status()?;
+        let body: serde_json::Value = resp.json().await?;
+        self.node_token = body["node_token"].as_str().map(|s| s.to_string());
+        tracing::info!("Registered with cortexd at {}", self.base_url);
+        Ok(())
+    }
+
+    pub async fn heartbeat(&self, node_id: &str, uptime_secs: u64) -> anyhow::Result<()> {
+        self.http
+            .post(format!("{}/nodes/heartbeat", self.base_url))
+            .bearer_auth(self.node_token.as_deref().unwrap_or(""))
+            .json(&serde_json::json!({"node_id": node_id, "uptime_seconds": uptime_secs}))
+            .send().await?
+            .error_for_status()?;
+        Ok(())
+    }
+}
+```
+
+Configuration via env vars or `policy.toml` `[cortexd]` section:
+```toml
+[cortexd]
+url = "https://cortexd.example.com"
+registration_token_env = "NEUROND_CORTEXD_TOKEN"
+heartbeat_interval_secs = 30
+```
+
+Registration is optional — if `NEUROND_CORTEXD_TOKEN` is not set, skip registration silently and only use mDNS announcement.
+
+**Tests:**
+- `test_registration_sends_correct_payload`: mock HTTP server verifies the registration JSON body
+- `test_heartbeat_uses_node_token`: heartbeat Authorization header matches the token from registration response
+- `test_registration_disabled_when_no_token`: no HTTP call made when env var not set
+
+---
+
+## Suggested Implementation Order
+
+The tasks above have dependencies. Recommended sequence:
+
+```
+1. bearer-auth           (unblocks: all network exposure)
+2. health/ready          (unblocks: cortexd health checks, mDNS viability)
+3. stdio-proxy           (core proxy feature)
+4. http-proxy            (extends proxy to HTTP upstreams)
+5. param-level-policy    (makes proxy policy meaningful)
+6. mdns-announcement     (requires auth to be safe)
+7. cortexd-registration  (requires auth + health + mdns)
+```
+
+---
+
 ## Verification
 
 After completing the above tasks:
