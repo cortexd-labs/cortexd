@@ -7,7 +7,7 @@ use rmcp::{
 use zbus::Connection;
 use crate::engine::policy::Policy;
 use crate::engine::audit::AuditLogger;
-use crate::providers::system::SystemProvider;
+use crate::native::system::SystemProvider;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -482,7 +482,7 @@ impl NeurondEngine {
         let tool_name = "system.reboot";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::system::system_reboot(&self.dbus_conn).await {
+        match crate::native::system::system_reboot(&self.dbus_conn).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -493,7 +493,7 @@ impl NeurondEngine {
         let tool_name = "system.sysctl.set";
         let params = serde_json::json!({"key": args.0.key, "value": args.0.value});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::system::system_sysctl_set(&args.0.key, &args.0.value).await {
+        match crate::native::system::system_sysctl_set(&args.0.key, &args.0.value).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -506,7 +506,7 @@ impl NeurondEngine {
         let tool_name = "process.list";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::process::process_list().await {
+        match crate::native::process::process_list().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -519,7 +519,7 @@ impl NeurondEngine {
         let lim = args.0.limit.unwrap_or(10);
         let params = serde_json::json!({"sort_by": sort, "limit": lim});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::process::process_top(&sort, lim).await {
+        match crate::native::process::process_top(&sort, lim).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -530,7 +530,7 @@ impl NeurondEngine {
         let tool_name = "process.tree";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::process::process_tree().await {
+        match crate::native::process::process_tree().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -541,7 +541,7 @@ impl NeurondEngine {
         let tool_name = "process.inspect";
         let params = serde_json::json!({"pid": args.0.pid});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::process::process_inspect(args.0.pid).await {
+        match crate::native::process::process_inspect(args.0.pid).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -552,7 +552,7 @@ impl NeurondEngine {
         let tool_name = "process.open-files";
         let params = serde_json::json!({"pid": args.0.pid});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::process::process_open_files(args.0.pid).await {
+        match crate::native::process::process_open_files(args.0.pid).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -564,7 +564,7 @@ impl NeurondEngine {
         let force = args.0.force.unwrap_or(false);
         let params = serde_json::json!({"pid": args.0.pid, "force": force});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::process::process_kill(args.0.pid, force).await {
+        match crate::native::process::process_kill(args.0.pid, force).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -575,7 +575,7 @@ impl NeurondEngine {
         let tool_name = "process.signal";
         let params = serde_json::json!({"pid": args.0.pid, "signum": args.0.signum});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::process::process_signal(args.0.pid, args.0.signum).await {
+        match crate::native::process::process_signal(args.0.pid, args.0.signum).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -586,7 +586,7 @@ impl NeurondEngine {
         let tool_name = "process.nice";
         let params = serde_json::json!({"pid": args.0.pid, "priority": args.0.priority});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::process::process_nice(args.0.pid, args.0.priority).await {
+        match crate::native::process::process_nice(args.0.pid, args.0.priority).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -599,7 +599,7 @@ impl NeurondEngine {
         let tool_name = "service.list";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::service::service_list(&self.dbus_conn).await {
+        match crate::native::service::service_list(&self.dbus_conn).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -610,7 +610,7 @@ impl NeurondEngine {
         let tool_name = "service.status";
         let params = serde_json::json!({"name": args.0.name});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::service::service_status(&args.0.name, &self.dbus_conn).await {
+        match crate::native::service::service_status(&args.0.name, &self.dbus_conn).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -622,7 +622,7 @@ impl NeurondEngine {
         let lim = args.0.lines.unwrap_or(50);
         let params = serde_json::json!({"name": args.0.name, "lines": lim});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::service::service_logs(&args.0.name, lim).await {
+        match crate::native::service::service_logs(&args.0.name, lim).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -633,7 +633,7 @@ impl NeurondEngine {
         let tool_name = "service.dependencies";
         let params = serde_json::json!({"name": args.0.name});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::service::service_dependencies(&args.0.name, &self.dbus_conn).await {
+        match crate::native::service::service_dependencies(&args.0.name, &self.dbus_conn).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -644,7 +644,7 @@ impl NeurondEngine {
         let tool_name = "service.start";
         let params = serde_json::json!({"name": args.0.name});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::service::service_start(&args.0.name, &self.dbus_conn).await {
+        match crate::native::service::service_start(&args.0.name, &self.dbus_conn).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -655,7 +655,7 @@ impl NeurondEngine {
         let tool_name = "service.stop";
         let params = serde_json::json!({"name": args.0.name});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::service::service_stop(&args.0.name, &self.dbus_conn).await {
+        match crate::native::service::service_stop(&args.0.name, &self.dbus_conn).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -666,7 +666,7 @@ impl NeurondEngine {
         let tool_name = "service.restart";
         let params = serde_json::json!({"name": args.0.name});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::service::service_restart(&args.0.name, &self.dbus_conn).await {
+        match crate::native::service::service_restart(&args.0.name, &self.dbus_conn).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -677,7 +677,7 @@ impl NeurondEngine {
         let tool_name = "service.enable";
         let params = serde_json::json!({"name": args.0.name});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::service::service_enable(&args.0.name, &self.dbus_conn).await {
+        match crate::native::service::service_enable(&args.0.name, &self.dbus_conn).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -688,7 +688,7 @@ impl NeurondEngine {
         let tool_name = "service.disable";
         let params = serde_json::json!({"name": args.0.name});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::service::service_disable(&args.0.name, &self.dbus_conn).await {
+        match crate::native::service::service_disable(&args.0.name, &self.dbus_conn).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -702,7 +702,7 @@ impl NeurondEngine {
         let lim = args.0.lines.unwrap_or(50);
         let params = serde_json::json!({"unit": args.0.unit.clone(), "lines": lim});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::log::log_tail(args.0.unit.as_deref(), lim).await {
+        match crate::native::log::log_tail(args.0.unit.as_deref(), lim).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -713,7 +713,7 @@ impl NeurondEngine {
         let tool_name = "log.search";
         let params = serde_json::json!({"keyword": args.0.keyword, "since": args.0.since.clone(), "priority": args.0.priority.clone()});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::log::log_search(&args.0.keyword, args.0.since.as_deref(), args.0.priority.as_deref()).await {
+        match crate::native::log::log_search(&args.0.keyword, args.0.since.as_deref(), args.0.priority.as_deref()).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -724,7 +724,7 @@ impl NeurondEngine {
         let tool_name = "log.units";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::log::log_units().await {
+        match crate::native::log::log_units().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -737,7 +737,7 @@ impl NeurondEngine {
         let max_lines = args.0.max_lines.unwrap_or(100);
         let params = serde_json::json!({"unit": args.0.unit.clone(), "timeout_secs": timeout, "max_lines": max_lines});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::log::log_stream(args.0.unit.as_deref(), timeout, max_lines).await {
+        match crate::native::log::log_stream(args.0.unit.as_deref(), timeout, max_lines).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -748,7 +748,7 @@ impl NeurondEngine {
         let tool_name = "log.rotate";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::log::log_rotate().await {
+        match crate::native::log::log_rotate().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -759,7 +759,7 @@ impl NeurondEngine {
         let tool_name = "log.vacuum";
         let params = serde_json::json!({"size_mb": args.0.size_mb, "days": args.0.days});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::log::log_vacuum(args.0.size_mb, args.0.days).await {
+        match crate::native::log::log_vacuum(args.0.size_mb, args.0.days).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -772,7 +772,7 @@ impl NeurondEngine {
         let tool_name = "network.interfaces";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::network::network_interfaces().await {
+        match crate::native::network::network_interfaces().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -783,7 +783,7 @@ impl NeurondEngine {
         let tool_name = "network.addresses";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::network::network_addresses().await {
+        match crate::native::network::network_addresses().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -794,7 +794,7 @@ impl NeurondEngine {
         let tool_name = "network.routes";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::network::network_routes().await {
+        match crate::native::network::network_routes().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -805,7 +805,7 @@ impl NeurondEngine {
         let tool_name = "network.connections";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::network::network_connections().await {
+        match crate::native::network::network_connections().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -816,7 +816,7 @@ impl NeurondEngine {
         let tool_name = "network.ports";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::network::network_ports() {
+        match crate::native::network::network_ports() {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -827,7 +827,7 @@ impl NeurondEngine {
         let tool_name = "network.dns";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::network::network_dns() {
+        match crate::native::network::network_dns() {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -839,7 +839,7 @@ impl NeurondEngine {
         let table = args.0.table.as_deref().unwrap_or("filter");
         let params = serde_json::json!({"table": table, "chain": args.0.chain, "rule": args.0.rule});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::network::network_firewall_add(table, &args.0.chain, &args.0.rule).await {
+        match crate::native::network::network_firewall_add(table, &args.0.chain, &args.0.rule).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -851,7 +851,7 @@ impl NeurondEngine {
         let table = args.0.table.as_deref().unwrap_or("filter");
         let params = serde_json::json!({"table": table, "chain": args.0.chain, "rule": args.0.rule});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::network::network_firewall_remove(table, &args.0.chain, &args.0.rule).await {
+        match crate::native::network::network_firewall_remove(table, &args.0.chain, &args.0.rule).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -864,7 +864,7 @@ impl NeurondEngine {
         let tool_name = "file.stat";
         let params = serde_json::json!({"path": args.0.path});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::file::file_info(&args.0.path).await {
+        match crate::native::file::file_info(&args.0.path).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -875,7 +875,7 @@ impl NeurondEngine {
         let tool_name = "file.list-dir";
         let params = serde_json::json!({"path": args.0.path});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::file::file_list(&args.0.path).await {
+        match crate::native::file::file_list(&args.0.path).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -886,7 +886,7 @@ impl NeurondEngine {
         let tool_name = "file.read";
         let params = serde_json::json!({"path": args.0.path, "max_bytes": args.0.max_bytes});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::file::file_read(&args.0.path, args.0.max_bytes).await {
+        match crate::native::file::file_read(&args.0.path, args.0.max_bytes).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -898,7 +898,7 @@ impl NeurondEngine {
         let lines = args.0.lines.unwrap_or(50);
         let params = serde_json::json!({"path": args.0.path, "lines": lines});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::file::file_tail(&args.0.path, lines).await {
+        match crate::native::file::file_tail(&args.0.path, lines).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -909,7 +909,7 @@ impl NeurondEngine {
         let tool_name = "file.search";
         let params = serde_json::json!({"dir": args.0.dir, "pattern": args.0.pattern, "max_results": args.0.max_results});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::file::file_search(&args.0.dir, &args.0.pattern, args.0.max_results).await {
+        match crate::native::file::file_search(&args.0.dir, &args.0.pattern, args.0.max_results).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -920,7 +920,7 @@ impl NeurondEngine {
         let tool_name = "file.write";
         let params = serde_json::json!({"path": args.0.path, "bytes": args.0.content.len()});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::file::file_write(&args.0.path, &args.0.content).await {
+        match crate::native::file::file_write(&args.0.path, &args.0.content).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -931,7 +931,7 @@ impl NeurondEngine {
         let tool_name = "file.mkdir";
         let params = serde_json::json!({"path": args.0.path});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::file::file_mkdir(&args.0.path).await {
+        match crate::native::file::file_mkdir(&args.0.path).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -942,7 +942,7 @@ impl NeurondEngine {
         let tool_name = "file.chmod";
         let params = serde_json::json!({"path": args.0.path, "mode": args.0.mode});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::file::file_chmod(&args.0.path, args.0.mode).await {
+        match crate::native::file::file_chmod(&args.0.path, args.0.mode).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -955,7 +955,7 @@ impl NeurondEngine {
         let tool_name = "container.list";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::container::container_list().await {
+        match crate::native::container::container_list().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -966,7 +966,7 @@ impl NeurondEngine {
         let tool_name = "container.status";
         let params = serde_json::json!({"id": args.0.id});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::container::container_status(&args.0.id).await {
+        match crate::native::container::container_status(&args.0.id).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -977,7 +977,7 @@ impl NeurondEngine {
         let tool_name = "container.logs";
         let params = serde_json::json!({"id": args.0.id, "lines": args.0.lines, "since": args.0.since.clone()});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::container::container_logs(&args.0.id, args.0.lines, args.0.since.as_deref()).await {
+        match crate::native::container::container_logs(&args.0.id, args.0.lines, args.0.since.as_deref()).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -988,7 +988,7 @@ impl NeurondEngine {
         let tool_name = "container.stats";
         let params = serde_json::json!({"id": args.0.id});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::container::container_stats(&args.0.id).await {
+        match crate::native::container::container_stats(&args.0.id).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -999,7 +999,7 @@ impl NeurondEngine {
         let tool_name = "container.inspect";
         let params = serde_json::json!({"id": args.0.id});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::container::container_inspect(&args.0.id).await {
+        match crate::native::container::container_inspect(&args.0.id).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1010,7 +1010,7 @@ impl NeurondEngine {
         let tool_name = "container.start";
         let params = serde_json::json!({"id": args.0.id});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::container::container_start(&args.0.id).await {
+        match crate::native::container::container_start(&args.0.id).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1021,7 +1021,7 @@ impl NeurondEngine {
         let tool_name = "container.stop";
         let params = serde_json::json!({"id": args.0.id});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::container::container_stop(&args.0.id).await {
+        match crate::native::container::container_stop(&args.0.id).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1032,7 +1032,7 @@ impl NeurondEngine {
         let tool_name = "container.restart";
         let params = serde_json::json!({"id": args.0.id});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::container::container_restart(&args.0.id).await {
+        match crate::native::container::container_restart(&args.0.id).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1044,7 +1044,7 @@ impl NeurondEngine {
         let force = args.0.force.unwrap_or(false);
         let params = serde_json::json!({"id": args.0.id, "force": force});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::container::container_remove(&args.0.id, force).await {
+        match crate::native::container::container_remove(&args.0.id, force).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1057,7 +1057,7 @@ impl NeurondEngine {
         let tool_name = "package.list";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::package::package_list().await {
+        match crate::native::package::package_list().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1068,7 +1068,7 @@ impl NeurondEngine {
         let tool_name = "package.updates";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::package::package_updates().await {
+        match crate::native::package::package_updates().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1079,7 +1079,7 @@ impl NeurondEngine {
         let tool_name = "package.search";
         let params = serde_json::json!({"query": args.0.query});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::package::package_search(&args.0.query).await {
+        match crate::native::package::package_search(&args.0.query).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1090,7 +1090,7 @@ impl NeurondEngine {
         let tool_name = "package.info";
         let params = serde_json::json!({"name": args.0.name});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::package::package_info(&args.0.name).await {
+        match crate::native::package::package_info(&args.0.name).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1101,7 +1101,7 @@ impl NeurondEngine {
         let tool_name = "package.install";
         let params = serde_json::json!({"name": args.0.name});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::package::package_install(&args.0.name).await {
+        match crate::native::package::package_install(&args.0.name).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1112,7 +1112,7 @@ impl NeurondEngine {
         let tool_name = "package.update";
         let params = serde_json::json!({"name": args.0.name});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::package::package_update(args.0.name.as_deref()).await {
+        match crate::native::package::package_update(args.0.name.as_deref()).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1123,7 +1123,7 @@ impl NeurondEngine {
         let tool_name = "package.remove";
         let params = serde_json::json!({"name": args.0.name});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::package::package_remove(&args.0.name).await {
+        match crate::native::package::package_remove(&args.0.name).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1136,7 +1136,7 @@ impl NeurondEngine {
         let tool_name = "identity.users";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::identity::identity_users().await {
+        match crate::native::identity::identity_users().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1147,7 +1147,7 @@ impl NeurondEngine {
         let tool_name = "identity.groups";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::identity::identity_groups().await {
+        match crate::native::identity::identity_groups().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1158,7 +1158,7 @@ impl NeurondEngine {
         let tool_name = "identity.sudoers";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::identity::identity_sudoers().await {
+        match crate::native::identity::identity_sudoers().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1169,7 +1169,7 @@ impl NeurondEngine {
         let tool_name = "identity.ssh-keys.list";
         let params = serde_json::json!({"username": args.0.username});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::identity::identity_ssh_keys_list(&args.0.username).await {
+        match crate::native::identity::identity_ssh_keys_list(&args.0.username).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1180,7 +1180,7 @@ impl NeurondEngine {
         let tool_name = "identity.ssh-keys.add";
         let params = serde_json::json!({"username": args.0.username});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::identity::identity_ssh_keys_add(&args.0.username, &args.0.key).await {
+        match crate::native::identity::identity_ssh_keys_add(&args.0.username, &args.0.key).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1191,7 +1191,7 @@ impl NeurondEngine {
         let tool_name = "identity.ssh-keys.remove";
         let params = serde_json::json!({"username": args.0.username, "key_identifier": args.0.key_identifier});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::identity::identity_ssh_keys_remove(&args.0.username, &args.0.key_identifier).await {
+        match crate::native::identity::identity_ssh_keys_remove(&args.0.username, &args.0.key_identifier).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1202,7 +1202,7 @@ impl NeurondEngine {
         let tool_name = "identity.user.lock";
         let params = serde_json::json!({"username": args.0.username});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::identity::identity_user_lock(&args.0.username).await {
+        match crate::native::identity::identity_user_lock(&args.0.username).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1215,7 +1215,7 @@ impl NeurondEngine {
         let tool_name = "storage.block.list";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::storage::storage_block_list().await {
+        match crate::native::storage::storage_block_list().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1226,7 +1226,7 @@ impl NeurondEngine {
         let tool_name = "storage.mounts.fstab";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::storage::storage_mounts_fstab().await {
+        match crate::native::storage::storage_mounts_fstab().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1237,7 +1237,7 @@ impl NeurondEngine {
         let tool_name = "storage.lvm.list";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::storage::storage_lvm_list().await {
+        match crate::native::storage::storage_lvm_list().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1248,7 +1248,7 @@ impl NeurondEngine {
         let tool_name = "storage.smart.health";
         let params = serde_json::json!({"device": args.0.device});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::storage::storage_smart_health(&args.0.device).await {
+        match crate::native::storage::storage_smart_health(&args.0.device).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1259,7 +1259,7 @@ impl NeurondEngine {
         let tool_name = "storage.mount";
         let params = serde_json::json!({"device": args.0.device, "mountpoint": args.0.mountpoint});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::storage::storage_mount(&args.0.device, &args.0.mountpoint, args.0.fstype.as_deref()).await {
+        match crate::native::storage::storage_mount(&args.0.device, &args.0.mountpoint, args.0.fstype.as_deref()).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1270,7 +1270,7 @@ impl NeurondEngine {
         let tool_name = "storage.unmount";
         let params = serde_json::json!({"mountpoint": args.0.mountpoint});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::storage::storage_unmount(&args.0.mountpoint).await {
+        match crate::native::storage::storage_unmount(&args.0.mountpoint).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1283,7 +1283,7 @@ impl NeurondEngine {
         let tool_name = "schedule.cron.list";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::schedule::schedule_cron_list().await {
+        match crate::native::schedule::schedule_cron_list().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1294,7 +1294,7 @@ impl NeurondEngine {
         let tool_name = "schedule.timers.list";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::schedule::schedule_timers_list().await {
+        match crate::native::schedule::schedule_timers_list().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1305,7 +1305,7 @@ impl NeurondEngine {
         let tool_name = "schedule.cron.add";
         let params = serde_json::json!({"username": args.0.username, "schedule": args.0.schedule, "command": args.0.command});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::schedule::schedule_cron_add(&args.0.username, &args.0.schedule, &args.0.command).await {
+        match crate::native::schedule::schedule_cron_add(&args.0.username, &args.0.schedule, &args.0.command).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1316,7 +1316,7 @@ impl NeurondEngine {
         let tool_name = "schedule.cron.remove";
         let params = serde_json::json!({"username": args.0.username, "command_pattern": args.0.command_pattern});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::schedule::schedule_cron_remove(&args.0.username, &args.0.command_pattern).await {
+        match crate::native::schedule::schedule_cron_remove(&args.0.username, &args.0.command_pattern).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1329,7 +1329,7 @@ impl NeurondEngine {
         let tool_name = "security.mac.status";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::security::security_mac_status().await {
+        match crate::native::security::security_mac_status().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1340,7 +1340,7 @@ impl NeurondEngine {
         let tool_name = "security.certs.check";
         let params = serde_json::json!({"path": args.0.path});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::security::security_certs_check(&args.0.path).await {
+        match crate::native::security::security_certs_check(&args.0.path).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1351,7 +1351,7 @@ impl NeurondEngine {
         let tool_name = "security.auditd.rules";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::security::security_auditd_rules().await {
+        match crate::native::security::security_auditd_rules().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1364,7 +1364,7 @@ impl NeurondEngine {
         let tool_name = "time.status";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::time::time_status(&self.dbus_conn).await {
+        match crate::native::time::time_status(&self.dbus_conn).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1375,7 +1375,7 @@ impl NeurondEngine {
         let tool_name = "time.sync";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::time::time_sync().await {
+        match crate::native::time::time_sync().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1388,7 +1388,7 @@ impl NeurondEngine {
         let tool_name = "hardware.sensors";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::hardware::hardware_sensors().await {
+        match crate::native::hardware::hardware_sensors().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1399,7 +1399,7 @@ impl NeurondEngine {
         let tool_name = "hardware.pci";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::hardware::hardware_pci().await {
+        match crate::native::hardware::hardware_pci().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1410,7 +1410,7 @@ impl NeurondEngine {
         let tool_name = "hardware.usb";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::hardware::hardware_usb().await {
+        match crate::native::hardware::hardware_usb().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1423,7 +1423,7 @@ impl NeurondEngine {
         let tool_name = "desktop.windows";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::desktop::desktop_windows().await {
+        match crate::native::desktop::desktop_windows().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1434,7 +1434,7 @@ impl NeurondEngine {
         let tool_name = "desktop.apps";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::desktop::desktop_apps().await {
+        match crate::native::desktop::desktop_apps().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1445,7 +1445,7 @@ impl NeurondEngine {
         let tool_name = "desktop.clipboard";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::desktop::desktop_clipboard().await {
+        match crate::native::desktop::desktop_clipboard().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1456,7 +1456,7 @@ impl NeurondEngine {
         let tool_name = "desktop.media";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::desktop::desktop_media(&self.session_conn).await {
+        match crate::native::desktop::desktop_media(&self.session_conn).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1467,7 +1467,7 @@ impl NeurondEngine {
         let tool_name = "desktop.theme";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::desktop::desktop_theme().await {
+        match crate::native::desktop::desktop_theme().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1478,7 +1478,7 @@ impl NeurondEngine {
         let tool_name = "desktop.volume";
         let params = serde_json::json!({});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::desktop::desktop_volume().await {
+        match crate::native::desktop::desktop_volume().await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1489,7 +1489,7 @@ impl NeurondEngine {
         let tool_name = "desktop.focus";
         let params = serde_json::json!({"window_id": args.0.window_id});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::desktop::desktop_focus(&args.0.window_id).await {
+        match crate::native::desktop::desktop_focus(&args.0.window_id).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1500,7 +1500,7 @@ impl NeurondEngine {
         let tool_name = "desktop.close";
         let params = serde_json::json!({"window_id": args.0.window_id});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::desktop::desktop_close(&args.0.window_id).await {
+        match crate::native::desktop::desktop_close(&args.0.window_id).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1511,7 +1511,7 @@ impl NeurondEngine {
         let tool_name = "desktop.launch";
         let params = serde_json::json!({"app": args.0.app});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::desktop::desktop_launch(&args.0.app).await {
+        match crate::native::desktop::desktop_launch(&args.0.app).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1522,7 +1522,7 @@ impl NeurondEngine {
         let tool_name = "desktop.set-volume";
         let params = serde_json::json!({"percent": args.0.percent});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::desktop::desktop_set_volume(args.0.percent).await {
+        match crate::native::desktop::desktop_set_volume(args.0.percent).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1533,7 +1533,7 @@ impl NeurondEngine {
         let tool_name = "desktop.set-theme";
         let params = serde_json::json!({"mode": args.0.mode});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::desktop::desktop_set_theme(&args.0.mode).await {
+        match crate::native::desktop::desktop_set_theme(&args.0.mode).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }
@@ -1546,7 +1546,7 @@ impl NeurondEngine {
         let body = args.0.body.as_deref().unwrap_or("");
         let params = serde_json::json!({"summary": args.0.summary, "urgency": urgency});
         let start = self.start_tool_call(tool_name, &params).await?;
-        match crate::providers::desktop::desktop_notify(&self.session_conn, &args.0.summary, body, urgency).await {
+        match crate::native::desktop::desktop_notify(&self.session_conn, &args.0.summary, body, urgency).await {
             Ok(v)  => { self.complete_tool_call(tool_name, &params, start, true).await;  Ok(CallToolResult::success(vec![Content::text(serde_json::to_string(&v).unwrap_or_default())])) }
             Err(e) => { self.complete_tool_call(tool_name, &params, start, false).await; Err(Self::internal_error(e)) }
         }

@@ -1703,3 +1703,1302 @@ cargo clippy -- -D warnings  # zero warnings
 cargo test 2>&1             # all tests pass or gracefully skip
 cargo test --features root-tests 2>&1  # run privileged tests (requires sudo)
 ```
+
+---
+
+## Roadmap — Local Federation Proxy
+
+**Source:** `specs/neurond-federation-spec.md`
+**Priority:** High — core architectural feature
+**Phase:** Phase 3 (after HTTP+SSE transport and mDNS/auth)
+
+neurond becomes a **Local Federation Proxy**: a single MCP endpoint per machine that aggregates its own native Linux tools with any number of third-party MCP servers running on the same node (redis-mcp, postgres-mcp, custom tools, etc.). cortexd connects to one port per machine, period.
+
+**Design Principles:**
+1. **Single ingress** — one port, one TLS cert, one firewall rule per node
+2. **Downstream isolation** — third-party MCP servers never bind to a network interface
+3. **Lifecycle binding** — stdio children die when neurond dies; no orphans via `kill_on_drop(true)`
+4. **Namespace everything** — zero tool name collisions across providers (`redis.get`, `pg.query`)
+5. **Audit everything** — every proxied call hits the same JSONL log as native calls
+
+**Module mapping (current project → federation spec):**
+- `src/providers/` → spec's `native/` — keep current naming, no rename needed
+- `src/engine/server.rs` → spec's `server.rs` — extend in-place
+- Add new `src/federation/` module with 5 sub-files
+- `policy.toml` → spec proposes `neurond.toml` as main config; see Config task below
+
+---
+
+### [ ] FEAT: Config schema — `neurond.toml` and `FederationConfig`
+
+**Category:** New Feature (prerequisite for all federation tasks)
+**Files:** `src/config.rs` (new), `Cargo.toml`, `neurond.toml.example` (new)
+
+**Problem:**
+The project currently uses only `policy.toml` for configuration. Federation requires a richer config file covering the server bind address, TLS settings, audit path, provider toggles, and `[[federation.servers]]` stanzas. The two files can coexist: `policy.toml` stays as the policy engine input; `neurond.toml` is the main operational config.
+
+**Cargo.toml additions:**
+```toml
+[dependencies]
+url          = "2"                                          # URL parsing + loopback validation
+chrono       = { version = "0.4", features = ["serde"] }   # Audit timestamps
+tokio-util   = { version = "0.7", features = ["rt"] }       # CancellationToken for graceful shutdown
+
+# rmcp must include client + transport features for dual-role:
+rmcp = { version = "0.16", features = [
+    "server",
+    "client",
+    "transport-io",          # TokioChildProcess (stdio)
+    "transport-sse-client",  # SseClientTransport (localhost HTTP)
+    "macros",
+] }
+```
+
+**`src/config.rs` — Full data structures:**
+```rust
+use std::collections::HashMap;
+use std::path::PathBuf;
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+pub struct NeurondConfig {
+    #[serde(default)]
+    pub server: ServerConfig,
+    #[serde(default)]
+    pub audit: AuditConfig,
+    #[serde(default)]
+    pub federation: FederationConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServerConfig {
+    #[serde(default = "default_bind")]
+    pub bind: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+    pub tls: Option<TlsConfig>,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self { bind: default_bind(), port: default_port(), tls: None }
+    }
+}
+
+fn default_bind() -> String { "0.0.0.0".to_string() }
+fn default_port() -> u16 { 8080 }
+
+#[derive(Debug, Deserialize)]
+pub struct TlsConfig {
+    pub cert: PathBuf,
+    pub key: PathBuf,
+    pub ca: Option<PathBuf>,   // Optional: mTLS client verification
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AuditConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_audit_path")]
+    pub path: PathBuf,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self { enabled: true, path: default_audit_path() }
+    }
+}
+
+fn default_audit_path() -> PathBuf { PathBuf::from("/var/log/neurond/audit.jsonl") }
+fn default_true() -> bool { true }
+
+#[derive(Debug, Default, Deserialize)]
+pub struct FederationConfig {
+    #[serde(default)]
+    pub servers: Vec<DownstreamServer>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DownstreamServer {
+    /// Namespace prefix, e.g. "redis" → all tools become "redis.<name>"
+    /// Must match ^[a-z][a-z0-9_]{0,31}$
+    /// Reserved: system, process, service, log, network, file, container,
+    ///           package, identity, storage, schedule, security, time, hardware, desktop
+    pub namespace: String,
+    /// stdio or localhost
+    #[serde(flatten)]
+    pub transport: DownstreamTransport,
+    /// Optional: only expose these specific tool names (empty = all)
+    #[serde(default)]
+    pub expose: Vec<String>,
+    /// Health check interval, default "30s"
+    #[serde(default = "default_healthcheck_interval")]
+    pub healthcheck_interval: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "transport")]
+pub enum DownstreamTransport {
+    #[serde(rename = "stdio")]
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        /// Environment variables for the child process.
+        /// Values support ${VAR_NAME} expansion at load time.
+        #[serde(default)]
+        env: HashMap<String, String>,
+    },
+    #[serde(rename = "localhost")]
+    Localhost {
+        /// Must resolve to 127.0.0.0/8 or ::1. Startup fails if not loopback.
+        url: String,
+    },
+}
+
+fn default_healthcheck_interval() -> String { "30s".to_string() }
+```
+
+**Namespace validation at startup:**
+```rust
+const RESERVED_NAMESPACES: &[&str] = &[
+    "system", "process", "service", "log", "network", "file",
+    "container", "package", "identity", "storage", "schedule",
+    "security", "time", "hardware", "desktop",
+];
+
+pub fn validate_namespace(ns: &str) -> anyhow::Result<()> {
+    let re = regex::Regex::new(r"^[a-z][a-z0-9_]{0,31}$").unwrap();
+    if !re.is_match(ns) {
+        anyhow::bail!("Invalid namespace '{}': must match ^[a-z][a-z0-9_]{{0,31}}$", ns);
+    }
+    if RESERVED_NAMESPACES.contains(&ns) {
+        anyhow::bail!("Namespace '{}' is reserved by a native provider", ns);
+    }
+    Ok(())
+}
+```
+
+**Config loading in `main.rs`:**
+```rust
+// Load neurond.toml if present, fall back to empty defaults
+let config: NeurondConfig = if std::path::Path::new("neurond.toml").exists() {
+    let raw = std::fs::read_to_string("neurond.toml")?;
+    toml::from_str(&raw)?
+} else {
+    NeurondConfig::default()
+};
+```
+
+**Example `neurond.toml.example`:**
+```toml
+[server]
+bind = "0.0.0.0"
+port = 8080
+
+[audit]
+enabled = true
+path = "/var/log/neurond/audit.jsonl"
+
+[[federation.servers]]
+namespace = "redis"
+transport = "stdio"
+command   = "/usr/local/bin/redis-mcp"
+args      = ["--readonly"]
+env       = { REDIS_URL = "redis://127.0.0.1:6379" }
+expose    = ["get", "set", "scan"]
+healthcheck_interval = "30s"
+
+[[federation.servers]]
+namespace = "pg"
+transport = "stdio"
+command   = "npx"
+args      = ["-y", "@modelcontextprotocol/server-postgres"]
+env       = { DATABASE_URL = "${DATABASE_URL}" }   # expanded from environment
+
+[[federation.servers]]
+namespace = "files"
+transport = "localhost"
+url       = "http://127.0.0.1:3100"
+```
+
+**Tests:**
+- Valid namespace `"redis"` → Ok
+- Invalid namespace `"Redis"` (uppercase) → Err
+- Reserved namespace `"system"` → Err
+- Namespace collision between two `[[federation.servers]]` entries → startup Err
+- Config with no `[federation]` section parses with empty `servers: vec![]`
+- Config with `${DATABASE_URL}` in env value expands at load time
+
+---
+
+### [ ] FEAT: `src/federation/` module — core types and wiring
+
+**Category:** New Feature (prerequisite for all other federation tasks)
+**Files:** `src/federation/mod.rs`, `src/federation/connection.rs`, `src/main.rs`
+
+**Problem:**
+Need the fundamental data structures and module layout before any implementation tasks can proceed.
+
+**Module structure to create:**
+```
+src/
+  federation/
+    mod.rs          # FederationManager, re-exports
+    connection.rs   # DownstreamConnection + DownstreamState
+    namespace.rs    # namespace_tools(), route_tool_call()
+    lifecycle.rs    # spawn, connect, monitor, restart, healthcheck
+    transport.rs    # stdio + localhost HTTP transport helpers
+```
+
+Add to `src/main.rs` (or wherever the module tree is declared):
+```rust
+mod federation;
+```
+
+**`src/federation/connection.rs` — core types:**
+```rust
+use rmcp::model::Tool;
+use rmcp::service::RunningService;
+use rmcp::RoleClient;
+use std::collections::HashMap;
+use std::time::Instant;
+
+#[derive(Debug)]
+pub enum DownstreamState {
+    Starting,
+    Running { since: Instant },
+    Restarting { attempt: u32, next_retry: Instant },
+    Dead { reason: String },
+}
+
+pub struct DownstreamConnection {
+    /// Config from neurond.toml
+    pub config: crate::config::DownstreamServer,
+    /// Current lifecycle state
+    pub state: DownstreamState,
+    /// Active rmcp client session (Some when Running)
+    pub session: Option<RunningService<RoleClient, ()>>,
+    /// Namespaced tool list (cached from last tools/list)
+    pub tools: Vec<Tool>,
+    /// "redis.get" -> "get" — used for routing
+    pub name_map: HashMap<String, String>,
+}
+```
+
+**`src/federation/mod.rs`:**
+```rust
+pub mod connection;
+pub mod lifecycle;
+pub mod namespace;
+pub mod transport;
+
+use connection::DownstreamConnection;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+pub struct FederationManager {
+    /// All downstream connections, guarded by RwLock for concurrent read/write
+    pub downstreams: Arc<RwLock<Vec<DownstreamConnection>>>,
+    /// Handle to the upstream session for notifications (set after server starts)
+    pub upstream_notify: tokio::sync::watch::Sender<()>,
+}
+
+impl FederationManager {
+    pub fn new() -> (Self, tokio::sync::watch::Receiver<()>) {
+        let (tx, rx) = tokio::sync::watch::channel(());
+        (Self {
+            downstreams: Arc::new(RwLock::new(Vec::new())),
+            upstream_notify: tx,
+        }, rx)
+    }
+
+    /// Aggregate all Running downstream tools for tools/list response
+    pub async fn aggregate_tools(&self) -> Vec<rmcp::model::Tool> {
+        let downstreams = self.downstreams.read().await;
+        downstreams.iter()
+            .filter(|ds| matches!(ds.state, connection::DownstreamState::Running { .. }))
+            .flat_map(|ds| ds.tools.iter().cloned())
+            .collect()
+    }
+
+    /// Send tools/list_changed notification to upstream
+    pub fn notify_tools_changed(&self) {
+        let _ = self.upstream_notify.send(());
+    }
+}
+```
+
+**Wire into `NeurondEngine` in `src/engine/server.rs`:**
+```rust
+pub struct NeurondEngine {
+    // existing fields...
+    pub federation: crate::federation::FederationManager,
+}
+```
+
+---
+
+### [ ] FEAT: stdio downstream spawning
+
+**Category:** New Feature
+**File:** `src/federation/lifecycle.rs`
+
+**Problem:**
+Implement spawning a stdio child process as an MCP client. This is the primary federation transport: the child process is a private pipe pair — zero network exposure.
+
+**Implementation:**
+```rust
+use tokio::process::Command;
+use rmcp::transport::TokioChildProcess;
+use crate::config::{DownstreamServer, DownstreamTransport};
+use crate::federation::connection::{DownstreamConnection, DownstreamState};
+use crate::federation::namespace::namespace_tools;
+
+pub async fn spawn_stdio_downstream(
+    config: &DownstreamServer,
+) -> anyhow::Result<DownstreamConnection> {
+    let DownstreamTransport::Stdio { ref command, ref args, ref env } = config.transport
+        else { anyhow::bail!("spawn_stdio_downstream called with non-stdio config") };
+
+    let mut cmd = Command::new(command);
+    cmd.args(args)
+       .envs(env.iter())
+       .stdin(std::process::Stdio::piped())
+       .stdout(std::process::Stdio::piped())
+       .stderr(std::process::Stdio::piped())
+       // CRITICAL: kill child if neurond exits (no orphan processes)
+       .kill_on_drop(true);
+
+    let child = cmd.spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn '{}': {}", command, e))?;
+
+    // Wrap child in rmcp's stdio transport (handles framing)
+    let transport = TokioChildProcess::new(child)
+        .map_err(|e| anyhow::anyhow!("TokioChildProcess failed: {}", e))?;
+
+    // Perform MCP initialize handshake
+    let client_info = rmcp::model::ClientInfo {
+        name: "neurond".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        ..Default::default()
+    };
+    let session = client_info.serve(transport).await
+        .map_err(|e| anyhow::anyhow!("MCP handshake failed for '{}': {}", command, e))?;
+
+    // Discover available tools
+    let raw_tools = session.list_tools(None).await
+        .map_err(|e| anyhow::anyhow!("tools/list failed for '{}': {}", config.namespace, e))?
+        .tools;
+
+    // Apply namespace prefix + expose filter
+    let (tools, name_map) = namespace_tools(&config.namespace, &raw_tools, &config.expose);
+
+    tracing::info!(
+        namespace = %config.namespace,
+        tool_count = tools.len(),
+        "stdio downstream connected"
+    );
+
+    Ok(DownstreamConnection {
+        config: config.clone(),
+        state: DownstreamState::Running { since: std::time::Instant::now() },
+        session: Some(session),
+        tools,
+        name_map,
+    })
+}
+```
+
+**Security: `kill_on_drop(true)` is mandatory** — without it, the child MCP server continues running after neurond exits, potentially accepting stale connections. Document this requirement in the module-level doc comment.
+
+**Tests:**
+- Spawn a minimal test MCP server (a small fixture binary or script in `tests/fixtures/`) and verify the connection returns `Running` state
+- Verify tool list is correctly namespaced: `"get"` from namespace `"redis"` → `"redis.get"`
+- `expose` filter: only listed tool names appear in the output
+- Invalid command path → spawning returns `Err` (not panic)
+- `kill_on_drop` behavior: drop the `DownstreamConnection` and verify the child process is gone
+
+---
+
+### [ ] FEAT: localhost HTTP downstream connection with loopback validation
+
+**Category:** New Feature
+**File:** `src/federation/transport.rs`
+
+**Problem:**
+Some MCP servers run as independent services (managed by systemd, shared with other consumers) and expose an HTTP endpoint. neurond must connect as an MCP client but must enforce that the URL resolves only to the loopback address — preventing proxying to remote hosts.
+
+**Implementation:**
+```rust
+use rmcp::transport::SseClientTransport;
+use crate::config::{DownstreamServer, DownstreamTransport};
+use crate::federation::connection::{DownstreamConnection, DownstreamState};
+use crate::federation::namespace::namespace_tools;
+
+/// Security: ensure the downstream URL only resolves to a loopback address.
+/// Prevents misconfiguration from exposing a remote host as a "local" MCP server.
+pub fn verify_loopback(url_str: &str) -> anyhow::Result<()> {
+    let url: url::Url = url_str.parse()
+        .map_err(|e| anyhow::anyhow!("Invalid downstream URL '{}': {}", url_str, e))?;
+    let host = url.host_str()
+        .ok_or_else(|| anyhow::anyhow!("Downstream URL has no host: {}", url_str))?;
+
+    // Resolve all addresses for the host
+    use std::net::ToSocketAddrs;
+    let port = url.port().unwrap_or(80);
+    let addrs = format!("{}:{}", host, port).to_socket_addrs()
+        .map_err(|e| anyhow::anyhow!("Cannot resolve '{}': {}", host, e))?;
+
+    for addr in addrs {
+        if !addr.ip().is_loopback() {
+            anyhow::bail!(
+                "Security: downstream URL '{}' resolves to non-loopback address {} — \
+                 downstream MCP servers must bind to 127.0.0.1 or ::1 only",
+                url_str,
+                addr.ip()
+            );
+        }
+    }
+    Ok(())
+}
+
+pub async fn connect_localhost_downstream(
+    config: &DownstreamServer,
+) -> anyhow::Result<DownstreamConnection> {
+    let DownstreamTransport::Localhost { ref url } = config.transport
+        else { anyhow::bail!("connect_localhost_downstream called with non-localhost config") };
+
+    // Enforce loopback-only before connecting
+    verify_loopback(url)?;
+
+    let transport = SseClientTransport::new(url).await
+        .map_err(|e| anyhow::anyhow!("SSE connection to '{}' failed: {}", url, e))?;
+
+    let client_info = rmcp::model::ClientInfo {
+        name: "neurond".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        ..Default::default()
+    };
+    let session = client_info.serve(transport).await
+        .map_err(|e| anyhow::anyhow!("MCP handshake failed for '{}': {}", config.namespace, e))?;
+
+    let raw_tools = session.list_tools(None).await?.tools;
+    let (tools, name_map) = namespace_tools(&config.namespace, &raw_tools, &config.expose);
+
+    tracing::info!(
+        namespace = %config.namespace,
+        url = %url,
+        tool_count = tools.len(),
+        "localhost HTTP downstream connected"
+    );
+
+    Ok(DownstreamConnection {
+        config: config.clone(),
+        state: DownstreamState::Running { since: std::time::Instant::now() },
+        session: Some(session),
+        tools,
+        name_map,
+    })
+}
+```
+
+**Tests:**
+- `verify_loopback("http://127.0.0.1:3100")` → Ok
+- `verify_loopback("http://localhost:3100")` → Ok (localhost resolves to 127.0.0.1)
+- `verify_loopback("http://192.168.1.10:3100")` → Err (non-loopback)
+- `verify_loopback("http://example.com:3100")` → Err (external host)
+- `verify_loopback("not-a-url")` → Err (parse error)
+- `verify_loopback("http://[::1]:3100")` → Ok (IPv6 loopback)
+
+---
+
+### [ ] FEAT: Namespace routing — tool rewriting and request routing
+
+**Category:** New Feature
+**File:** `src/federation/namespace.rs`
+
+**Problem:**
+When neurond discovers tools from a downstream, tool names like `"get"` must be rewritten to `"redis.get"` before being advertised upstream. When a client calls `"redis.get"`, neurond must route to the redis downstream and call `"get"` with the original (un-namespaced) name. This bidirectional mapping is the core of the federation routing layer.
+
+**`src/federation/namespace.rs`:**
+```rust
+use rmcp::model::Tool;
+use std::collections::HashMap;
+
+/// Rewrite downstream tools with a namespace prefix.
+///
+/// Returns:
+///   - namespaced tools: Tool list with prefixed names for presentation to upstream
+///   - name_map: "redis.get" → "get" for reverse-lookup during routing
+pub fn namespace_tools(
+    namespace: &str,
+    raw_tools: &[Tool],
+    expose_filter: &[String],
+) -> (Vec<Tool>, HashMap<String, String>) {
+    let mut tools = Vec::new();
+    let mut name_map = HashMap::new();
+
+    for tool in raw_tools {
+        let original_name = tool.name.as_str();
+
+        // Apply expose filter: if set, only forward listed tools
+        if !expose_filter.is_empty() && !expose_filter.iter().any(|e| e == original_name) {
+            continue;
+        }
+
+        let namespaced = format!("{}.{}", namespace, original_name);
+
+        let mut namespaced_tool = tool.clone();
+        namespaced_tool.name = namespaced.clone().into();
+        // Prefix description for clarity in tool listings
+        namespaced_tool.description = Some(format!(
+            "[{}] {}",
+            namespace,
+            tool.description.as_deref().unwrap_or(""),
+        ).into());
+
+        name_map.insert(namespaced, original_name.to_string());
+        tools.push(namespaced_tool);
+    }
+
+    (tools, name_map)
+}
+```
+
+**Request routing in `src/engine/server.rs` — extend `call_tool` handler:**
+```rust
+/// Route a tool call to either a native provider or a federated downstream.
+async fn route_tool_call(
+    &self,
+    tool_name: &str,
+    arguments: serde_json::Value,
+) -> Result<rmcp::model::CallToolResult, rmcp::McpError> {
+    // 1. Try native tools first (no namespace prefix in native tool names)
+    if !tool_name.contains('.') || self.is_native_tool(tool_name) {
+        return self.call_native_tool(tool_name, arguments).await;
+    }
+
+    // 2. Look up the downstream that owns this namespaced tool
+    let downstreams = self.federation.downstreams.read().await;
+    for downstream in downstreams.iter() {
+        if let Some(original_name) = downstream.name_map.get(tool_name) {
+            // Audit the proxied call
+            self.audit_proxy_call(tool_name, &downstream.config.namespace, original_name).await;
+
+            let session = downstream.session.as_ref()
+                .ok_or_else(|| rmcp::McpError::internal_error(
+                    format!("Downstream '{}' is not currently running", downstream.config.namespace),
+                    None,
+                ))?;
+
+            // Forward to downstream with the original (un-prefixed) name
+            return session.call_tool(original_name, arguments).await
+                .map_err(|e| rmcp::McpError::internal_error(e.to_string(), None));
+        }
+    }
+
+    Err(rmcp::McpError::invalid_params(
+        format!("Tool '{}' not found in native providers or any federated downstream", tool_name),
+        None,
+    ))
+}
+```
+
+**`tools/list` aggregation in `NeurondEngine`:**
+```rust
+fn list_all_tools(&self) -> Vec<rmcp::model::Tool> {
+    let mut all = self.native_tool_list.clone();
+    // aggregate_tools() filters out Restarting/Dead downstreams
+    // so clients never see tools they can't call
+    all.extend(
+        futures::executor::block_on(self.federation.aggregate_tools())
+    );
+    all
+}
+```
+
+**Tests:**
+- `namespace_tools("redis", tools, &[])` — all tools get `"redis."` prefix
+- `namespace_tools("redis", tools, &["get".into()])` — only `"get"` is included as `"redis.get"`
+- Empty `raw_tools` → empty output
+- `name_map` reverse lookup: `"redis.get"` → `"get"`
+- Tool description includes `"[redis]"` prefix
+
+---
+
+### [ ] FEAT: Lifecycle management — startup, restart policy, graceful shutdown
+
+**Category:** New Feature
+**File:** `src/federation/lifecycle.rs`
+
+**Problem:**
+Downstream MCP servers can crash, be updated, or time out. neurond must:
+1. Connect all downstreams at startup (or schedule retry if startup fails)
+2. Monitor each downstream and detect disconnection
+3. Restart with exponential backoff (max 5 attempts, max 60s delay)
+4. Mark as Dead if max retries exceeded and remove its tools from the advertised list
+5. Shut down all downstreams cleanly on SIGTERM/SIGINT
+
+**Startup sequence (in `main.rs`):**
+```
+1. Parse neurond.toml
+2. Validate all namespaces (reserved check, collision check, format check)
+3. Initialize native providers (D-Bus, procfs)
+4. Start audit logger
+5. For each [[federation.servers]]:
+   a. Attempt connect/spawn (stdio or localhost)
+   b. On success: add to FederationManager.downstreams as Running
+   c. On failure: add as Restarting{attempt:0} and schedule retry
+   d. Spawn a monitor task per downstream
+6. Bind upstream HTTP+SSE listener
+7. Accept MCP client connections
+```
+
+**Restart policy (exponential backoff):**
+```rust
+pub const MAX_RESTART_ATTEMPTS: u32 = 5;
+pub const BASE_BACKOFF_SECS: u64 = 1;
+pub const MAX_BACKOFF_SECS: u64 = 60;
+
+/// Compute backoff delay for attempt N (1-indexed).
+/// Sequence: 1s, 2s, 4s, 8s, 16s, 32s, 60s (capped)
+pub fn backoff_duration(attempt: u32) -> std::time::Duration {
+    let secs = std::cmp::min(
+        BASE_BACKOFF_SECS * 2u64.pow(attempt.saturating_sub(1)),
+        MAX_BACKOFF_SECS,
+    );
+    std::time::Duration::from_secs(secs)
+}
+
+/// Spawned per downstream. Monitors for disconnect, attempts restart.
+pub async fn monitor_downstream(
+    federation: Arc<crate::federation::FederationManager>,
+    index: usize,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                tracing::debug!("Monitor task for downstream[{}] shutting down", index);
+                return;
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+        }
+
+        let is_dead = {
+            let ds = federation.downstreams.read().await;
+            ds.get(index).map(|d| {
+                matches!(d.state, DownstreamState::Running { .. })
+                && d.session.as_ref().map(|s| s.is_closed()).unwrap_or(true)
+            }).unwrap_or(false)
+        };
+
+        if is_dead {
+            let attempt = {
+                let mut ds_list = federation.downstreams.write().await;
+                let ds = &mut ds_list[index];
+                let attempt = match &ds.state {
+                    DownstreamState::Restarting { attempt, .. } => *attempt + 1,
+                    _ => 1,
+                };
+                if attempt > MAX_RESTART_ATTEMPTS {
+                    tracing::error!(
+                        namespace = %ds.config.namespace,
+                        "Max restart attempts exceeded — marking downstream as Dead"
+                    );
+                    ds.state = DownstreamState::Dead {
+                        reason: format!("Failed after {} restart attempts", attempt),
+                    };
+                    ds.tools.clear();
+                    ds.name_map.clear();
+                    drop(ds_list);
+                    // Notify upstream client that tool list has shrunk
+                    federation.notify_tools_changed();
+                    return;
+                }
+                let delay = backoff_duration(attempt);
+                tracing::warn!(
+                    namespace = %ds.config.namespace,
+                    attempt,
+                    delay_secs = delay.as_secs(),
+                    "Downstream disconnected, scheduling restart"
+                );
+                ds.state = DownstreamState::Restarting {
+                    attempt,
+                    next_retry: std::time::Instant::now() + delay,
+                };
+                drop(ds_list);
+                federation.notify_tools_changed();
+                delay
+            };
+
+            tokio::time::sleep(attempt).await;
+
+            // Attempt reconnection
+            reconnect_downstream(&federation, index).await;
+        }
+    }
+}
+
+async fn reconnect_downstream(federation: &crate::federation::FederationManager, index: usize) {
+    let config = {
+        let ds = federation.downstreams.read().await;
+        ds[index].config.clone()
+    };
+
+    let result = match &config.transport {
+        crate::config::DownstreamTransport::Stdio { .. } =>
+            super::lifecycle::spawn_stdio_downstream(&config).await,
+        crate::config::DownstreamTransport::Localhost { .. } =>
+            super::transport::connect_localhost_downstream(&config).await,
+    };
+
+    let mut ds_list = federation.downstreams.write().await;
+    match result {
+        Ok(new_conn) => {
+            tracing::info!(namespace = %config.namespace, "Downstream reconnected");
+            ds_list[index] = new_conn;
+            drop(ds_list);
+            federation.notify_tools_changed();
+        }
+        Err(e) => {
+            tracing::warn!(namespace = %config.namespace, error = %e, "Reconnect attempt failed");
+            // State already set to Restarting; monitor loop will retry
+        }
+    }
+}
+```
+
+**Graceful shutdown:**
+```rust
+use tokio_util::sync::CancellationToken;
+
+pub async fn shutdown_all_downstreams(federation: &crate::federation::FederationManager) {
+    let mut ds_list = federation.downstreams.write().await;
+    for ds in ds_list.iter_mut() {
+        if let Some(session) = ds.session.take() {
+            // Send MCP shutdown notification to downstream
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                session.cancel(),
+            ).await;
+        }
+        // stdio children: kill_on_drop will handle them, but explicit is better
+        // (child is consumed by TokioChildProcess transport; no separate handle needed)
+    }
+}
+```
+
+Wire `CancellationToken` into `main.rs` SIGTERM handler:
+```rust
+let cancel = CancellationToken::new();
+let cancel_clone = cancel.clone();
+tokio::spawn(async move {
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+    tokio::select! {
+        _ = sigterm.recv() => {},
+        _ = tokio::signal::ctrl_c() => {},
+    }
+    cancel_clone.cancel();
+});
+```
+
+**Tests:**
+- `backoff_duration(1)` = 1s, `backoff_duration(2)` = 2s, `backoff_duration(5)` = 16s, `backoff_duration(6)` = 32s, `backoff_duration(10)` = 60s (capped)
+- Downstream dies → `notify_tools_changed()` called → tools removed from aggregate list
+- After max retries, state transitions to `Dead` and monitor task exits
+- `shutdown_all_downstreams` completes within 3 seconds even if downstreams are unresponsive (timeout enforced)
+
+---
+
+### [ ] FEAT: Downstream health checking and `neurond.status` meta-tool
+
+**Category:** New Feature
+**Files:** `src/federation/lifecycle.rs`, `src/engine/server.rs`
+
+**Problem:**
+Two forms of health checking are needed:
+1. **Periodic downstream health check** — neurond calls `tools/list` on each Running downstream every N seconds; if it times out, treat as disconnected and trigger restart logic
+2. **`neurond.status` meta-tool** — cortexd (or any MCP client) can call this to get the health of neurond itself plus all downstream states
+
+**Downstream health check (per-downstream loop, runs alongside monitor):**
+```rust
+pub async fn healthcheck_loop(
+    federation: Arc<crate::federation::FederationManager>,
+    index: usize,
+    interval_secs: u64,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(interval_secs)) => {}
+        }
+
+        let alive = {
+            let ds = federation.downstreams.read().await;
+            if let Some(session) = ds.get(index).and_then(|d| d.session.as_ref()) {
+                matches!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        session.list_tools(None),
+                    ).await,
+                    Ok(Ok(_))
+                )
+            } else {
+                false
+            }
+        };
+
+        if !alive {
+            tracing::warn!(
+                "Healthcheck failed for downstream[{}], triggering restart logic",
+                index
+            );
+            // Mark as disconnected — monitor loop will handle the restart
+            let mut ds_list = federation.downstreams.write().await;
+            if let Some(ds) = ds_list.get_mut(index) {
+                if matches!(ds.state, DownstreamState::Running { .. }) {
+                    ds.session = None; // signal to monitor that it should restart
+                }
+            }
+        }
+    }
+}
+```
+
+**`neurond.status` meta-tool in `src/engine/server.rs`:**
+```rust
+#[tool(description = "Get neurond status: version, uptime, native providers, and federated downstream states")]
+async fn neurond_status(&self) -> Result<CallToolResult, McpError> {
+    let downstreams = self.federation.downstreams.read().await;
+
+    let status = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptime_secs": self.start_time.elapsed().as_secs(),
+        "native_providers": [
+            "system", "process", "service", "log", "network", "file",
+            "container", "package", "identity", "storage", "schedule",
+            "security", "time", "hardware", "desktop"
+        ],
+        "federation": downstreams.iter().map(|ds| serde_json::json!({
+            "namespace": ds.config.namespace,
+            "state": match &ds.state {
+                DownstreamState::Starting => "starting",
+                DownstreamState::Running { .. } => "running",
+                DownstreamState::Restarting { attempt, .. } =>
+                    &format!("restarting (attempt {})", attempt),
+                DownstreamState::Dead { reason } =>
+                    &format!("dead: {}", reason),
+            },
+            "tool_count": ds.tools.len(),
+            "transport": match &ds.config.transport {
+                DownstreamTransport::Stdio { command, .. } => format!("stdio:{}", command),
+                DownstreamTransport::Localhost { url } => format!("localhost:{}", url),
+            },
+        })).collect::<Vec<_>>(),
+    });
+
+    Ok(CallToolResult::success(vec![Content::json(status)?]))
+}
+```
+
+**Tests:**
+- `neurond_status` returns the meta-tool result without error (no downstreams → empty federation array)
+- With a running downstream: state shows `"running"`, tool_count > 0
+- With a dead downstream: state shows `"dead: ..."`, tool_count = 0
+
+---
+
+### [ ] FEAT: Audit logging — extend `AuditEntry` for federation
+
+**Category:** New Feature
+**File:** `src/engine/audit.rs`
+
+**Problem:**
+The current `AuditEntry` struct does not capture:
+- Which MCP client is making the call (client identity from mTLS or session metadata)
+- Whether the call was proxied to a downstream (routed_to, original_tool)
+- Downstream lifecycle events (state changes)
+
+These are needed for a complete audit trail in multi-provider deployments.
+
+**Extended `AuditEntry`:**
+```rust
+use chrono::{DateTime, Utc};
+use serde::Serialize;
+
+#[derive(Debug, Serialize)]
+pub struct AuditEntry {
+    /// ISO 8601 timestamp
+    pub timestamp: DateTime<Utc>,
+    /// MCP client identity — from mTLS CN when available, otherwise "unknown"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+    /// "tool_call" | "tool_result" | "tools_list" | "downstream_state_change"
+    pub event: String,
+    /// Full namespaced tool name as seen by the client (e.g. "redis.get")
+    pub tool: String,
+    /// Decision: "allow" | "deny" | "error"
+    pub decision: String,
+    /// Parameters passed to the tool (if allowed by policy)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+    /// If proxied: which namespace handled it
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routed_to: Option<String>,
+    /// If proxied: the original un-namespaced tool name (e.g. "get")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_tool: Option<String>,
+    /// Call duration in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// true = success, false = error
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub success: Option<bool>,
+    /// Error message if failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+```
+
+**Example log lines:**
+```jsonl
+{"timestamp":"2026-03-15T14:22:01Z","client":"cortexd-prod","event":"tool_call","tool":"system.info","decision":"allow","duration_ms":2,"success":true}
+{"timestamp":"2026-03-15T14:22:01Z","client":"cortexd-prod","event":"tool_call","tool":"redis.get","decision":"allow","routed_to":"redis","original_tool":"get","duration_ms":4,"success":true}
+{"timestamp":"2026-03-15T14:22:05Z","event":"downstream_state_change","tool":"","decision":"allow","routed_to":"pg","error":"Process exited with code 1"}
+{"timestamp":"2026-03-15T14:22:06Z","event":"downstream_state_change","tool":"","decision":"allow","routed_to":"pg","error":"Restarting (attempt 1, backoff 1s)"}
+```
+
+**Changes:**
+- Add `chrono = { version = "0.4", features = ["serde"] }` (already in Cargo.toml additions above)
+- Replace `SystemTime` timestamps with `chrono::Utc::now()`
+- Add `client` field (populated from mTLS CN or HTTP header, `None` until auth is implemented)
+- Add `routed_to` + `original_tool` in the proxied call path
+- Add `"downstream_state_change"` event type emitted by the lifecycle monitor
+
+---
+
+### [ ] FEAT: `notifications/tools/list_changed` — notify upstream on downstream state change
+
+**Category:** New Feature
+**File:** `src/engine/server.rs`, `src/federation/mod.rs`
+
+**Problem:**
+When a downstream crashes or its tool list changes, the MCP upstream client (cortexd or Claude Desktop) must be notified that `tools/list` has changed. Without this, the client continues attempting to call tools that no longer exist.
+
+MCP supports this via the `notifications/tools/list_changed` notification.
+
+**Implementation:**
+```rust
+// In FederationManager::notify_tools_changed():
+// Sends on the watch channel, which the server loop listens to
+
+// In server.rs main loop — listen for tool list changes and send MCP notification:
+let mut tools_changed = federation_notify_rx;
+tokio::spawn(async move {
+    loop {
+        tools_changed.changed().await.ok();
+        // Notify the upstream MCP client
+        if let Some(ref upstream) = upstream_session {
+            tracing::info!("Tool list changed — sending notifications/tools/list_changed");
+            let _ = upstream.notify_tools_list_changed().await;
+        }
+    }
+});
+```
+
+The `tokio::sync::watch::channel(())` approach (already wired in the module task) means:
+- Multiple state changes during a backoff delay are coalesced into one notification
+- The listener always gets the latest state without queuing
+
+**Tests:**
+- Killing a downstream triggers `notify_tools_changed()` within 10 seconds
+- The aggregated tool list no longer includes the dead downstream's tools after notification
+- A new connection after restart triggers another notification with the restored tools
+
+---
+
+### [ ] FEAT: `neurond-lite` — federation-only build without Linux providers
+
+**Category:** New Feature / Build variant
+**Files:** `Cargo.toml`, `src/main.rs`, `src/providers/mod.rs`, all provider files
+
+**Problem:**
+The user has specified that federation should "probably be also offered in a neurond-lite version that will ship without the linux controls." This means:
+- A smaller binary with no Linux system provider code compiled in
+- Safe to run on non-Linux platforms (macOS, WSL2 dev environments)
+- Useful as a pure MCP proxy/aggregator without any system management risk
+- Smaller attack surface — no `process.kill`, `service.restart`, `package.install`, etc.
+
+**Cargo.toml — add feature flags:**
+```toml
+[features]
+default = ["linux-providers"]
+
+# All 15 native Linux provider modules.
+# When disabled, neurond acts as a pure federation proxy only.
+linux-providers = [
+    "dep:procfs",
+    "dep:nix",
+    "dep:bollard",
+    "dep:x509-parser",
+]
+
+# Explicit alias for building the lite variant:
+# cargo build --no-default-features
+```
+
+**`src/providers/mod.rs`:**
+```rust
+#[cfg(feature = "linux-providers")]
+pub mod system;
+#[cfg(feature = "linux-providers")]
+pub mod process;
+#[cfg(feature = "linux-providers")]
+pub mod service;
+#[cfg(feature = "linux-providers")]
+pub mod log;
+#[cfg(feature = "linux-providers")]
+pub mod network;
+#[cfg(feature = "linux-providers")]
+pub mod file;
+#[cfg(feature = "linux-providers")]
+pub mod container;
+#[cfg(feature = "linux-providers")]
+pub mod package;
+#[cfg(feature = "linux-providers")]
+pub mod identity;
+#[cfg(feature = "linux-providers")]
+pub mod storage;
+#[cfg(feature = "linux-providers")]
+pub mod schedule;
+#[cfg(feature = "linux-providers")]
+pub mod security;
+#[cfg(feature = "linux-providers")]
+pub mod time;
+#[cfg(feature = "linux-providers")]
+pub mod hardware;
+#[cfg(feature = "linux-providers")]
+pub mod desktop;
+```
+
+**`src/main.rs` — conditional D-Bus initialization:**
+```rust
+#[cfg(feature = "linux-providers")]
+let dbus_system_conn = Arc::new(zbus::Connection::system().await?);
+#[cfg(feature = "linux-providers")]
+let dbus_session_conn = zbus::Connection::session().await.ok().map(Arc::new);
+
+#[cfg(not(feature = "linux-providers"))]
+let dbus_system_conn = unreachable_placeholder();  // not compiled
+```
+
+**`src/engine/server.rs` — conditional tool registration:**
+```rust
+#[cfg(feature = "linux-providers")]
+{
+    // Register all 100 native tools
+    all_tools.extend(self.native_system_tools());
+    // ... etc
+}
+
+// neurond.status is always registered regardless of feature flags
+```
+
+**Build targets:**
+```bash
+# Full neurond with all 100 Linux tools + federation
+cargo build --release
+
+# neurond-lite: federation proxy only, no Linux provider code
+cargo build --release --no-default-features
+
+# Verify lite build compiles
+cargo check --no-default-features
+
+# Run lite tests (no Linux-specific tests)
+cargo test --no-default-features
+```
+
+**Package naming in Cargo.toml:**
+```toml
+[[bin]]
+name = "neurond"
+required-features = []   # always buildable
+
+# Optional: a distinct binary name for the lite variant
+# Users can alias this with a Makefile target
+```
+
+**Tests:**
+- `cargo check --no-default-features` compiles without errors on Linux
+- `cargo test --no-default-features` runs without panics (no Linux syscalls attempted)
+- Lite binary at startup: `tools/list` returns only `neurond.status` and any federated tools, no `system.*` etc.
+- Full binary at startup: all 100+ tools present
+
+---
+
+### [ ] CONSIDER: Dynamic federation config reload (Open Question #1)
+
+**Category:** Future Feature
+**File:** `src/federation/lifecycle.rs`
+
+**Problem:**
+Currently, `[[federation.servers]]` is read once at startup. Adding or removing a downstream server requires restarting neurond, which also restarts all stdio child processes.
+
+**Options:**
+1. **SIGHUP reload** — catch SIGHUP, re-read `neurond.toml`, diff against current downstreams, start new ones, shut down removed ones, leave unchanged ones running. No disruption to existing connections.
+2. **File watcher** — use the `notify = "6"` crate to watch `neurond.toml` for changes, debounce, and trigger reload automatically. Convenient for operators but adds a background thread.
+3. **No dynamic reload (current)** — simplest, use systemd to restart the service (`systemctl reload neurond` via `ExecReload=/bin/kill -HUP $MAINPID`).
+
+**Recommendation:** Implement SIGHUP-based reload in Phase 4.
+
+**Rough implementation sketch for SIGHUP approach:**
+```rust
+let mut sighup = tokio::signal::unix::signal(SignalKind::hangup())?;
+tokio::spawn(async move {
+    loop {
+        sighup.recv().await;
+        tracing::info!("SIGHUP received, reloading federation config...");
+        match reload_federation_config(&federation, &config_path).await {
+            Ok(()) => tracing::info!("Federation config reloaded"),
+            Err(e) => tracing::error!("Config reload failed: {}", e),
+        }
+    }
+});
+```
+
+---
+
+### [ ] CONSIDER: Config secrets — env var expansion in federation env values (Open Question #5)
+
+**Category:** Security / Config
+**File:** `src/config.rs`
+
+**Problem:**
+`env` values in `[[federation.servers]]` may contain database passwords:
+```toml
+[[federation.servers]]
+env = { DATABASE_URL = "postgresql://user:password@localhost/db" }
+```
+Storing passwords in plain TOML is bad practice. The config file would need to be root-owned with 0600 permissions, which is restrictive.
+
+**Solution: `${VAR_NAME}` expansion at config load time:**
+```rust
+/// Expand ${VAR_NAME} references in a string using the process environment.
+/// Fails fast if the referenced variable is not set.
+pub fn expand_env_var(value: &str) -> anyhow::Result<String> {
+    let mut result = value.to_string();
+    // Find all ${...} patterns
+    while let Some(start) = result.find("${") {
+        let end = result[start..].find('}')
+            .ok_or_else(|| anyhow::anyhow!("Unclosed ${{}} in config value: {}", value))?
+            + start;
+        let var_name = &result[start + 2..end];
+        let var_value = std::env::var(var_name)
+            .map_err(|_| anyhow::anyhow!(
+                "Config references ${{{}}}, but that environment variable is not set",
+                var_name
+            ))?;
+        result.replace_range(start..=end, &var_value);
+    }
+    Ok(result)
+}
+```
+
+Apply during config loading:
+```rust
+// After parsing DownstreamTransport::Stdio, expand env values
+if let DownstreamTransport::Stdio { ref mut env, .. } = server.transport {
+    for val in env.values_mut() {
+        *val = expand_env_var(val)?;
+    }
+}
+```
+
+**Tests:**
+- `expand_env_var("postgresql://${DB_USER}:${DB_PASS}@localhost/db")` with vars set → expanded string
+- Missing env var → `Err` with helpful message naming the variable
+- No `${...}` in value → returned unchanged
+- Nested `${...}` → expand left-to-right (or reject with error)
+
+---
+
+### [ ] CONSIDER: Streaming tool results proxy (Open Question #3)
+
+**Category:** Architecture / Future Feature
+**Files:** `src/federation/namespace.rs`, `src/engine/server.rs`
+
+**Problem:**
+The current routing layer assumes tool calls return a single `CallToolResult`. Some MCP tools return streaming results (e.g., `log.stream` in neurond itself). When proxying such a tool from a downstream, the proxy must forward the stream incrementally rather than buffering the entire response.
+
+**Current status:** `rmcp` handles streaming at the transport level. The routing layer (`route_tool_call`) calls `session.call_tool()` and returns a single result — this will buffer the entire stream.
+
+**Required investigation:**
+1. Does `rmcp`'s `session.call_tool()` already handle streaming responses transparently?
+2. If not, does rmcp expose a streaming call API?
+3. How does this interact with neurond's own HTTP+SSE upstream transport?
+
+**This is directly relevant to the existing `log.stream` tool** — if a downstream exposes a streaming log tool, we need stream forwarding to work correctly.
+
+**Action:** Before implementing federation Phase 3, investigate rmcp's streaming capabilities and document the approach. Create a follow-up task if a custom streaming proxy layer is needed.
+
+---
+
+## Federation Implementation Order
+
+```
+Phase 3 — Local Federation (this spec)
+
+1.  config-schema           # FederationConfig types, namespace validation, neurond.toml
+2.  federation-module       # Module structure, core types (DownstreamConnection, FederationManager)
+3.  stdio-spawning          # TokioChildProcess, MCP handshake, kill_on_drop
+4.  localhost-http          # SseClientTransport, verify_loopback()
+5.  namespace-routing       # namespace_tools(), route_tool_call(), aggregate_tools()
+6.  lifecycle-management    # monitor task, exponential backoff, shutdown
+7.  healthcheck             # healthcheck_loop, neurond.status meta-tool
+8.  audit-extension         # Extended AuditEntry with client/routed_to/original_tool
+9.  tools-list-changed      # notifications/tools/list_changed via watch channel
+10. neurond-lite            # linux-providers feature flag, --no-default-features build
+11. env-expansion           # ${VAR_NAME} expansion in federation env config values
+12. streaming-investigation # Assess rmcp streaming capabilities for log.stream proxy
+13. dynamic-reload          # SIGHUP-based config reload (Phase 4)
+```
+
+**Cargo.toml diff summary for federation:**
+```toml
+# New dependencies:
+url          = "2"
+tokio-util   = { version = "0.7", features = ["rt"] }
+
+# Updated: rmcp needs additional features
+rmcp = { version = "0.16", features = [
+    "server",
+    "client",           # NEW: dual-role
+    "transport-io",     # NEW: TokioChildProcess for stdio
+    "transport-sse-client",  # NEW: SseClientTransport for localhost HTTP
+    "macros",
+] }
+
+# chrono is already needed for audit; add serde feature if not present:
+chrono = { version = "0.4", features = ["serde"] }
+```
+
+---
+
+## Final Verification
+
+```bash
+# Full build
+cargo build 2>&1
+cargo clippy -- -D warnings
+cargo test 2>&1
+cargo test --features root-tests 2>&1
+
+# Federation lite build
+cargo build --no-default-features 2>&1
+cargo clippy --no-default-features -- -D warnings
+cargo test --no-default-features 2>&1
+```

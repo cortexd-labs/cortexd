@@ -1,6 +1,9 @@
+pub mod config;
 pub mod engine;
+pub mod federation;
 pub mod linux;
-pub mod providers;
+pub mod native;
+pub mod router;
 
 use tracing_subscriber::EnvFilter;
 use std::sync::Arc;
@@ -13,7 +16,7 @@ use rmcp::transport::streamable_http_server::{
 use crate::engine::server::NeurondEngine;
 use crate::engine::policy::Policy;
 use crate::engine::audit::AuditLogger;
-use crate::providers::system::{SystemProvider, LinuxSystemProvider};
+use crate::native::system::{SystemProvider, LinuxSystemProvider};
 
 /// Default paths for configuration and logging.
 /// In production, these should be overridden by CLI args or environment variables.

@@ -1,8 +1,8 @@
 # neurond
 
-`neurond` is an AI-native Linux system controller. It exposes ~100 tools across 15 providers — covering system telemetry, process management, services, logs, networking, containers, packages, identity, storage, scheduling, security, time, hardware, and desktop — as a single [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server over HTTP+SSE.
+`neurond` is an AI-native Linux system controller and **local federation proxy**. It exposes ~100 tools across 15 providers — covering system telemetry, process management, services, logs, networking, containers, packages, identity, storage, scheduling, security, time, hardware, and desktop — as a single [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server over HTTP+SSE.
 
-AI models like Claude can use `neurond` to observe and manage a live Linux host in real time, with every action governed by a configurable policy and written to a structured audit log.
+AI models like Claude can use `neurond` to observe and manage a live Linux host in real time, with every action governed by a configurable policy and written to a structured audit log. As a federation proxy, neurond also aggregates third-party MCP servers (redis-mcp, postgres-mcp, custom tools) behind a single authenticated endpoint — cortexd connects once per machine.
 
 ---
 
@@ -31,30 +31,60 @@ AI models like Claude can use `neurond` to observe and manage a live Linux host 
 ## Architecture
 
 ```text
-┌─────────────────────────────────────────────────┐
-│                  AI Client (MCP)                │
-│           HTTP POST + SSE stream                │
-└──────────────────────┬──────────────────────────┘
-                       │ :8080/api/v1/mcp
-┌──────────────────────▼──────────────────────────┐
-│                 engine/                         │
-│  policy.rs  ──  server.rs  ──  audit.rs         │
-│  deny-by-default TOML policy   JSON audit log   │
-└──────────────────────┬──────────────────────────┘
-                       │
-        ┌──────────────┼──────────────┐
-        │              │              │
-┌───────▼──────┐ ┌─────▼──────┐ ┌────▼────────┐
-│ providers/   │ │  linux/    │ │  (D-Bus)    │
-│ 15 modules   │ │ systemd.rs │ │ system bus  │
-│ pure Rust    │ │ network.rs │ │ session bus │
-│ + validation │ │ desktop.rs │ │             │
-└──────────────┘ └────────────┘ └─────────────┘
+                    ┌─────────────────────────────────────────────┐
+                    │              Node (Linux host)              │
+                    │                                             │
+                    │  ┌─────────────────────────────────────┐    │
+  cortexd ── mTLS ──┤  │             neurond                 │    │
+  (fleet)    :8080  │  │                                     │    │
+                    │  │  ┌───────────┐  ┌────────────────┐  │    │
+                    │  │  │  native/  │  │  federation/   │  │    │
+                    │  │  │           │  │                │  │    │
+                    │  │  │ system.*  │  │ redis.*  ──────┼──┼──→ redis-mcp (stdio)
+                    │  │  │ process.* │  │ pg.*     ──────┼──┼──→ postgres-mcp (127.0.0.1)
+                    │  │  │ service.* │  │ custom.* ──────┼──┼──→ custom-mcp (stdio)
+                    │  │  │ log.*     │  │                │  │
+                    │  │  │ ...       │  └────────────────┘  │
+                    │  │  └───────────┘                      │
+                    │  │  engine/ — policy · audit · server  │
+                    │  └─────────────────────────────────────┘    │
+                    └─────────────────────────────────────────────┘
 ```
 
-- **`src/engine/`** — MCP server, policy enforcement, audit logging.
-- **`src/providers/`** — One module per domain. Input validation, pure Rust logic, no raw syscalls.
-- **`src/linux/`** — Low-level OS access: D-Bus proxies (systemd, desktop), Netlink, direct `/proc` and `/sys` parsing.
+**Source layout:**
+
+```text
+src/
+├── main.rs              # Entry point, signal handling
+├── config.rs            # neurond.toml parsing (server, audit, federation)
+├── router.rs            # Top-level tool routing: native → engine, namespaced → federation
+│
+├── engine/
+│   ├── server.rs        # NeurondEngine — all 100 tool registrations (#[tool] handlers)
+│   ├── policy.rs        # Deny-by-default TOML policy engine
+│   └── audit.rs         # Structured JSONL audit logger
+│
+├── native/              # One module per Linux provider domain
+│   └── system.rs · process.rs · service.rs · log.rs · network.rs · file.rs
+│       container.rs · package.rs · identity.rs · storage.rs · schedule.rs
+│       security.rs · time.rs · hardware.rs · desktop.rs
+│
+├── linux/               # Low-level OS interface layer
+│   ├── systemd.rs       # D-Bus proxies (systemd, journald)
+│   ├── network.rs       # Netlink (rtnetlink), /proc/net parsing
+│   └── desktop.rs       # D-Bus session bus (MPRIS, notifications)
+│
+└── federation/          # Local Federation Proxy (Phase 3)
+    ├── connection.rs    # DownstreamConnection, DownstreamState machine
+    ├── namespace.rs     # Tool rewriting (redis.get), request routing
+    ├── lifecycle.rs     # Spawn, restart with backoff, healthcheck
+    └── transport.rs     # stdio (TokioChildProcess) + localhost HTTP helpers
+```
+
+- **`engine/`** — MCP server, deny-by-default policy enforcement, JSONL audit log.
+- **`native/`** — One module per provider domain. Input validation, pure Rust logic, no raw syscalls.
+- **`linux/`** — Low-level OS access: D-Bus proxies (systemd, desktop), Netlink, `/proc` and `/sys` parsing.
+- **`federation/`** — Local Federation Proxy: aggregates downstream MCP servers behind a single endpoint. Stub today, implemented in Phase 3.
 
 Mutation tools (reboot, kill, firewall, package install, etc.) are **denied by default** and must be explicitly allowed in `policy.toml`.
 
@@ -66,7 +96,7 @@ Mutation tools (reboot, kill, firewall, package install, etc.) are **denied by d
 - **Audit log** — Every tool call is logged as a JSON line: timestamp, tool, params, decision, result, duration.
 - **Input validation** — All user-controlled strings (unit names, package names, file paths, signal numbers) are validated before use. Shell metacharacter injection is rejected at the validation layer.
 - **Path allowlist** — File operations are restricted to `/var/log`, `/var/lib`, `/etc`, `/tmp`, `/home`, `/opt`, `/srv`, `/usr/share`, `/proc`, `/sys/class`. Sensitive files (`/etc/shadow`, `/etc/gshadow`, `/etc/sudoers`) are always blocked.
-- **Direct syscalls over subprocesses** — Where possible, kernel interfaces are used directly: mount/umount via `nix`, systemd unit control via D-Bus, sysctl via `/proc/sys` writes, reboot via `org.freedesktop.login1`.
+- **Direct syscalls over subprocesses** — Where possible, kernel interfaces are used directly: systemd unit control via D-Bus, sysctl via `/proc/sys`, reboot via `org.freedesktop.login1`.
 
 ---
 
@@ -79,7 +109,6 @@ Mutation tools (reboot, kill, firewall, package install, etc.) are **denied by d
 - D-Bus system socket (standard on any systemd host)
 - For desktop tools: D-Bus session socket, `wmctrl`, `pactl`, `gsettings`
 - For container tools: Docker daemon running
-- For certificate tools: `libsystemd-dev` (optional, for future journal integration)
 
 ### Build
 
@@ -167,7 +196,7 @@ cargo test
 cargo clippy -- -D warnings
 
 # Run a specific provider's tests
-cargo test providers::process
+cargo test native::process
 ```
 
 Tests are written alongside every provider. Mutation tools are tested by validating rejection of malformed input (injection strings, out-of-range values) without requiring root or a live system.
@@ -176,13 +205,13 @@ Tests are written alongside every provider. Mutation tools are tested by validat
 
 ## Contributing
 
-1. Add new tools under `src/providers/` with a matching `#[cfg(test)]` block.
+1. Add new tools under `src/native/` with a matching `#[cfg(test)]` block.
 2. If the tool requires raw OS access, add the low-level function to `src/linux/`.
 3. Register the tool in `src/engine/server.rs` following the existing `#[tool]` pattern.
 4. Add a `policy.toml` rule (read tools to the allow group, mutation tools left denied with a comment).
 5. Ensure `cargo build && cargo clippy -- -D warnings && cargo test` all pass.
 
-See [`tasks/todo.md`](tasks/todo.md) for the current improvement backlog.
+See [`tasks/todo.md`](tasks/todo.md) for the improvement backlog and federation roadmap.
 
 ---
 
