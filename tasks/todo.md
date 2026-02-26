@@ -31,57 +31,27 @@ Implement TLS using `axum-server` + `rustls`:
 
 ---
 
-### [ ] FIX: `node_id` regenerated on every startup
+### [x] DONE: `node_id` regenerated on every startup
 
 **Category:** Security / Correctness
 **File:** `src/config.rs:97`
-
-**Problem:**
-`generate_node_id()` creates a new UUID on every cold start. cortexd sees a new node each time — no persistence across reboots.
-
-**Fix:**
-Persist to `/var/lib/neurond/node_id`:
-
-```rust
-fn generate_or_load_node_id() -> String {
-    let path = "/var/lib/neurond/node_id";
-    if let Ok(id) = std::fs::read_to_string(path) {
-        return id.trim().to_string();
-    }
-    let id = uuid::Uuid::new_v4().to_string();
-    let _ = std::fs::create_dir_all("/var/lib/neurond");
-    let _ = std::fs::write(path, &id);
-    id
-}
-```
-
-Dev fallback: use `./node_id` in CWD.
+**Status:** Fixed 2026-02-26
 
 ---
 
-### [ ] FIX: Audit log failure must not silently allow mutations
+### [x] DONE: Audit log failure must not silently allow mutations
 
 **Category:** Security
 **Files:** `src/security/audit.rs`, `src/upstream/server.rs`
-
-**Problem:**
-`AuditLogger::log()` returns `()`. Disk-full + mutation = unaudited action.
-
-**Fix:**
-Return `anyhow::Result<()>`, propagate failures for mutation tools.
+**Status:** Fixed 2026-02-26
 
 ---
 
-### [ ] FIX: Policy engine — deny-wins semantics
+### [x] DONE: Policy engine — deny-wins semantics
 
 **Category:** Security / Correctness
 **File:** `src/security/policy.rs`
-
-**Problem:**
-Last-matching-rule-wins semantics. Deny should always win.
-
-**Fix:**
-If any deny matches, return false immediately. Short-circuit.
+**Status:** Fixed 2026-02-26
 
 ---
 
@@ -150,13 +120,11 @@ fn validate(&self) -> anyhow::Result<()> {
 
 ---
 
-### [ ] IMPROVE: Extend wildcard matching to full glob patterns
+### [x] DONE: Extend wildcard matching to full glob patterns
 
 **Category:** Usability
 **File:** `src/security/policy.rs`
-
-**Fix:**
-Replace hand-rolled matching with `glob = "0.3"`.
+**Status:** Fixed 2026-02-26
 
 ---
 

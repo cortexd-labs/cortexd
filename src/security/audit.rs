@@ -39,11 +39,11 @@ impl AuditLogger {
         decision: &str,
         result: &str,
         duration_ms: u64,
-    ) {
+    ) -> anyhow::Result<()> {
         let timestamp = Utc::now().to_rfc3339();
 
         let event = AuditEvent {
-            timestamp: timestamp,
+            timestamp,
             tool: tool.to_string(),
             params: params.clone(),
             decision: decision.to_string(),
@@ -51,30 +51,26 @@ impl AuditLogger {
             duration_ms,
         };
 
-        match serde_json::to_string(&event) {
-            Ok(json_line) => {
-                let log_path = self.log_path.clone();
-                let handle = tokio::task::spawn_blocking(move || {
-                    match OpenOptions::new().create(true).append(true).open(&log_path) {
-                        Ok(mut file) => {
-                            if let Err(e) = writeln!(file, "{}", json_line) {
-                                tracing::warn!("Audit log write failed: {}", e);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Audit log open failed ({}): {}", log_path, e);
-                        }
-                    }
-                });
-                // Await the blocking task; log if it panics
-                if let Err(e) = handle.await {
-                    tracing::error!("Audit log task panicked: {}", e);
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Audit event serialization failed: {}", e);
-            }
-        }
+        let json_line = serde_json::to_string(&event)?;
+        let log_path = self.log_path.clone();
+
+        let handle = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .map_err(|e| anyhow::anyhow!("Audit log open failed ({}): {}", log_path, e))?;
+
+            writeln!(file, "{}", json_line)
+                .map_err(|e| anyhow::anyhow!("Audit log write failed: {}", e))?;
+
+            Ok(())
+        });
+
+        // Await the task, propagate panic or underlying error
+        handle.await.map_err(|e| anyhow::anyhow!("Audit log task panicked: {}", e))??;
+        
+        Ok(())
     }
 }
 

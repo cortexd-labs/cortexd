@@ -97,7 +97,28 @@ fn default_healthcheck() -> u64 {
 }
 
 fn generate_node_id() -> String {
-    uuid::Uuid::new_v4().to_string()
+    let dev_path = "./node_id";
+    let prod_path = "/var/lib/neurond/node_id";
+
+    // Try reading dev/prod
+    if let Ok(id) = std::fs::read_to_string(dev_path) {
+        return id.trim().to_string();
+    }
+    if let Ok(id) = std::fs::read_to_string(prod_path) {
+        return id.trim().to_string();
+    }
+
+    let new_id = uuid::Uuid::new_v4().to_string();
+    
+    // Save to dev/prod based on access
+    if std::fs::write(dev_path, &new_id).is_ok() {
+        return new_id;
+    }
+    
+    let _ = std::fs::create_dir_all("/var/lib/neurond");
+    let _ = std::fs::write(prod_path, &new_id);
+
+    new_id
 }
 
 /// Default config path

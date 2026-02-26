@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Effect {
     Allow,
@@ -43,27 +43,33 @@ impl Policy {
 
     /// Check if a tool is allowed by the policy
     pub fn is_allowed(&self, tool_name: &str) -> bool {
-        let mut final_effect = self.default_action.clone();
+        let mut matched_allow = false;
 
         for rule in &self.rules {
             for pattern in &rule.tools {
                 if wildcard_match(pattern, tool_name) {
-                    final_effect = rule.effect.clone();
+                    if rule.effect == Effect::Deny {
+                        // Deny-wins: Short-circuit immediately on ANY explicit deny
+                        return false;
+                    } else if rule.effect == Effect::Allow {
+                        matched_allow = true;
+                    }
                 }
             }
         }
 
-        final_effect == Effect::Allow
+        if matched_allow {
+            true
+        } else {
+            self.default_action == Effect::Allow
+        }
     }
 }
 
 fn wildcard_match(pattern: &str, value: &str) -> bool {
-    if pattern.ends_with(".*") {
-        let prefix = &pattern[0..pattern.len() - 2];
-        value.starts_with(prefix)
-    } else {
-        pattern == value
-    }
+    glob::Pattern::new(pattern)
+        .map(|p| p.matches(value))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -100,6 +106,47 @@ mod tests {
         assert!(policy.is_allowed("system.memory")); // Allowed by system.*
         assert!(!policy.is_allowed("system.cpu")); // Denied by system.cpu override
         assert!(!policy.is_allowed("service.list")); // Denied by default
+    }
+
+    #[test]
+    fn test_deny_wins_over_allow_regardless_of_order() {
+        // Even if the allow rule comes AFTER the deny rule, the deny should permanently short-circuit
+        let policy = Policy {
+            default_action: Effect::Allow,
+            rules: vec![
+                PolicyRule {
+                    id: "deny-all-network".into(),
+                    description: None,
+                    effect: Effect::Deny,
+                    tools: vec!["network.*".into()],
+                },
+                PolicyRule {
+                    id: "allow-specific-ping-override".into(),
+                    description: None,
+                    effect: Effect::Allow,
+                    tools: vec!["network.ping".into()],
+                },
+            ],
+        };
+
+        // Deny wins!
+        assert!(!policy.is_allowed("network.ping"));
+    }
+
+    #[test]
+    fn test_glob_support() {
+        // Tests that actual globs are supported, not just end-matches
+        assert!(wildcard_match("linux.*.info", "linux.system.info"));
+        assert!(wildcard_match("redis.?et", "redis.get"));
+        assert!(wildcard_match("redis.?et", "redis.set"));
+        assert!(!wildcard_match("redis.?et", "redis.keys"));
+    }
+
+    #[test]
+    fn test_effect_is_copy() {
+        let effect1 = Effect::Allow;
+        let effect2 = effect1; // Should copy, not move
+        assert_eq!(effect1, effect2); 
     }
 
     #[test]

@@ -37,7 +37,7 @@ impl ProxyEngine {
         let start = std::time::Instant::now();
 
         if !self.policy.is_allowed(&tool_name) {
-            self.audit.log(&tool_name, &arguments, "denied", "blocked", 0).await;
+            let _ = self.audit.log(&tool_name, &arguments, "denied", "blocked", 0).await;
             return Err(McpError {
                 code: ErrorCode::INVALID_REQUEST,
                 message: format!("Access denied to tool {} by security policy", tool_name).into(),
@@ -53,7 +53,14 @@ impl ProxyEngine {
 
         let duration = start.elapsed().as_millis() as u64;
         let result_str = if result.is_ok() { "success" } else { "error" };
-        self.audit.log(&tool_name, &arguments, "allowed", result_str, duration).await;
+        
+        self.audit.log(&tool_name, &arguments, "allowed", result_str, duration)
+            .await
+            .map_err(|e| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: format!("Audit logging failed (disk full?): {}", e).into(),
+                data: None,
+            })?;
 
         result
     }
