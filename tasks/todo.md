@@ -409,3 +409,39 @@ Create a well-documented example config showing:
 ### [ ] ADD: PID file or systemd socket activation support
 
 For production daemon management.
+
+---
+
+## End-to-End Integration Tests
+
+---
+
+### [ ] ADD: End-to-End Integration Tests for neurond
+
+**Problem:**
+Right now, `neurond` and `mcpd` are completely decoupled. We lack tests validating that `neurond` correctly manages the lifecycle of a downstream proxy, prefixes namespaces appropriately, enforces policy at the router edge, and handles timeouts/panics safely over IPC or Network layers.
+
+**Fix:**
+Create a dedicated `tests/integration/` suite validating standard workflows under real process execution.
+
+**Specific Test Scenarios to Implement:**
+
+1. **Stdio Lifecycle & Discovery (`test_stdio_discovery.rs`)**
+   - **Setup:** Configure neurond to spawn `mcpd` across the `stdio` transport using `cargo run --bin mcpd`.
+   - **Verify:** neurond successfully handshakes `initialize` with the child process, retrieves its tools, and correctly exposes them upstream prefixed with the `namespace` defined in `neurond.toml`.
+   - **Teardown:** Verify that shutting down neurond safely sends a SIGTERM to the `mcpd` child process, avoiding orphaned zombied processes.
+
+2. **Policy Enforcement Edge Context (`test_strict_policy_routing.rs`)**
+   - **Setup:** Spin up neurond with a mock HTTP downstream and a strict `/etc/neurond/policy.toml` that denies `system.*` but allows `network.ping`.
+   - **Verify:** Make a tool call upstream for `network.ping` and assert the downstream actually received the request.
+   - **Verify:** Make a tool call upstream for `system.reboot` and assert it is instantly rejected with `INVALID_REQUEST` without any traffic reaching the downstream MCP.
+   - **Verify:** Assert that both the ALLOWED and DENIED requests were successfully flushed to the `audit.log` file.
+
+3. **Multi-Tenant Federation Integrity (`test_multi_downstream_isolation.rs`)**
+   - **Setup:** Configure neurond with 3 different downstreams: Two `stdio` transports pointing to dummy MCP servers, and one `localhost` HTTP downstream.
+   - **Verify:** `list_tools` across neurond successfully aggregates tools from all 3 downstreams linearly.
+   - **Verify:** Issuing a tool call to downstream "A" does not accidentally execute or leak data to downstream "C".
+
+4. **Network Resilience & Timeouts (`test_downstream_network_failures.rs`)**
+   - **Setup:** Connect neurond to an HTTP downstream that accepts connections but sleeps infinitely (mock tarpit).
+   - **Verify:** Firing a tool call to the tarpit downstream gracefully times out after 30 seconds rather than locking the `RwLock` federation manager permanently. Other concurrent tool calls should remain responsive.
