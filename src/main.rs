@@ -1,6 +1,7 @@
 pub mod config;
 pub mod federation;
 pub mod upstream;
+pub mod security;
 pub mod registration;
 
 use std::sync::Arc;
@@ -14,6 +15,16 @@ use rmcp::transport::streamable_http_server::{
 
 use crate::federation::manager::FederationManager;
 use crate::upstream::server::ProxyEngine;
+use crate::security::policy::Policy;
+use crate::security::audit::AuditLogger;
+
+/// Default paths for configuration and logging.
+const DEFAULT_POLICY_PATH: &str = "/etc/neurond/policy.toml";
+const DEFAULT_AUDIT_LOG: &str = "/var/log/neurond/audit.log";
+
+/// Fallback paths for development (relative to CWD).
+const DEV_POLICY_PATH: &str = "policy.toml";
+const DEV_AUDIT_LOG: &str = "audit.log";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -30,6 +41,32 @@ async fn main() -> anyhow::Result<()> {
     // Load config
     let config = config::load_config()?;
     let bind_addr = format!("{}:{}", config.server.bind, config.server.port);
+
+    // Load policy
+    let policy_path = if std::path::Path::new(DEFAULT_POLICY_PATH).exists() {
+        DEFAULT_POLICY_PATH
+    } else {
+        DEV_POLICY_PATH
+    };
+
+    let policy = Policy::load_from_file(policy_path).unwrap_or_else(|err| {
+        tracing::warn!("Failed to load {} ({}). Defaulting to Deny-All.", policy_path, err);
+        Policy::default()
+    });
+    tracing::info!("Loaded policy from {}", policy_path);
+    let policy = Arc::new(policy);
+
+    // Set up audit log
+    let audit_path = if std::path::Path::new(DEFAULT_AUDIT_LOG)
+        .parent()
+        .is_some_and(|p| p.exists())
+    {
+        DEFAULT_AUDIT_LOG
+    } else {
+        DEV_AUDIT_LOG
+    };
+    let audit_logger = Arc::new(AuditLogger::new(audit_path));
+    tracing::info!("Audit log: {}", audit_path);
 
     // Initialize federation manager and connect to downstreams
     let federation = Arc::new(FederationManager::new());
@@ -77,9 +114,11 @@ async fn main() -> anyhow::Result<()> {
     let session_manager = LocalSessionManager::default();
 
     let fed = federation.clone();
+    let pol = policy.clone();
+    let aud = audit_logger.clone();
     let mcp_service = StreamableHttpService::new(
         move || {
-            let engine = ProxyEngine::new(fed.clone());
+            let engine = ProxyEngine::new(fed.clone(), pol.clone(), aud.clone());
             Ok(engine)
         },
         session_manager.into(),
