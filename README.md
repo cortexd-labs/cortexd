@@ -19,8 +19,11 @@ neurond connects to downstream MCP servers (like [mcpd](https://github.com/corte
                     │  │  │ upstream/   │  │ federation/  │  │    │
                     │  │  │             │  │              │  │    │
                     │  │  │ ProxyEngine │  │ manager.rs   │  │    │
-                    │  │  │ (MCP Server)│  │ namespace.rs │  │    │
-                    │  │  │             │  │ transport.rs │  │    │
+                    │  │  │             │  │ namespace.rs │  │    │
+                    │  │  │ security/   │  │ transport.rs │  │    │
+                    │  │  │             │  │              │  │    │
+                    │  │  │ policy.rs   │  │              │  │    │
+                    │  │  │ audit.rs    │  │              │  │    │
                     │  │  └──────┬──────┘  └──────┬───────┘  │    │
                     │  │         │                 │          │    │
                     │  │         └─────────────────┘          │    │
@@ -45,7 +48,8 @@ neurond connects to downstream MCP servers (like [mcpd](https://github.com/corte
 2. **Connect** — On startup, neurond connects to each downstream and discovers their tools
 3. **Namespace** — Each tool is prefixed: `system.info` from mcpd becomes `linux.system.info`
 4. **Expose** — All namespaced tools are exposed as a single MCP server on `:8443`
-5. **Route** — Incoming `linux.system.info` call → strip prefix → forward `system.info` to mcpd
+5. **Security** — All incoming tool calls are evaluated against `policy.toml` and recorded in `audit.log`
+6. **Route** — Incoming `linux.system.info` call → strip prefix → forward `system.info` to mcpd
 
 ---
 
@@ -112,6 +116,30 @@ cargo run
 ```
 
 Server listens on `http://127.0.0.1:8443/api/v1/mcp`.
+
+---
+
+## Security
+
+- **Deny-by-default policy** — `/etc/neurond/policy.toml` controls which namespaced tools are allowed. Mutations are blocked unless explicitly enabled.
+- **Audit log** — Every tool call is logged as JSONL in `/var/log/neurond/audit.log` (timestamp, tool, params, decision, result, duration).
+
+### Configure Policy (.toml)
+
+```toml
+default_action = "deny"
+
+[[rules]]
+id = "allow-safe-observability"
+effect = "allow"
+# You can use wildcards and namespaces
+tools = ["linux.system.*", "redis.get", "linux.service.status"]
+
+[[rules]]
+id = "allow-linux-restart"
+effect = "allow"
+tools = ["linux.service.restart"]
+```
 
 ---
 

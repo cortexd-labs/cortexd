@@ -59,6 +59,32 @@ Dev fallback: use `./node_id` in CWD.
 
 ---
 
+### [ ] FIX: Audit log failure must not silently allow mutations
+
+**Category:** Security
+**Files:** `src/security/audit.rs`, `src/upstream/server.rs`
+
+**Problem:**
+`AuditLogger::log()` returns `()`. Disk-full + mutation = unaudited action.
+
+**Fix:**
+Return `anyhow::Result<()>`, propagate failures for mutation tools.
+
+---
+
+### [ ] FIX: Policy engine — deny-wins semantics
+
+**Category:** Security / Correctness
+**File:** `src/security/policy.rs`
+
+**Problem:**
+Last-matching-rule-wins semantics. Deny should always win.
+
+**Fix:**
+If any deny matches, return false immediately. Short-circuit.
+
+---
+
 ### [ ] FIX: No graceful shutdown — heartbeat orphaned, no deregister
 
 **Category:** Correctness
@@ -121,6 +147,16 @@ fn validate(&self) -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+---
+
+### [ ] IMPROVE: Extend wildcard matching to full glob patterns
+
+**Category:** Usability
+**File:** `src/security/policy.rs`
+
+**Fix:**
+Replace hand-rolled matching with `glob = "0.3"`.
 
 ---
 
@@ -238,6 +274,10 @@ Cache in `Arc<Vec<Tool>>`, rebuild only when downstreams change. list_tools beco
 ### [x] DONE: Default bind changed `0.0.0.0` → `127.0.0.1`
 
 **Status:** Fixed 2026-02-26
+
+### [ ] CLEANUP: `Effect` should derive `Copy`
+
+**File:** `src/security/policy.rs`
 
 ---
 
